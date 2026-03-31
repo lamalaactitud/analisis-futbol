@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-Football Live Analysis System v2
+Football Live Analysis System v3
 Fuentes: ESPN (principal) + API-Football (opcional)
-Análisis táctico en 4 lecturas + reportes automáticos HT/FT para periodistas.
+Análisis táctico dinámico + reportes HT/FT inmediatos + evolución estadística.
 """
 
+import re
 import requests
 import time
 import os
@@ -25,19 +26,18 @@ except ImportError:
 #  CONFIGURACIÓN — edita solo esta sección
 # ════════════════════════════════════════════════════════════════
 
-INTERVALO_ACTUALIZACION = 300  # 5 minutos
+INTERVALO_ACTUALIZACION = 300   # segundos entre actualizaciones completas
+INTERVALO_MONITOR       = 30    # segundos entre chequeos de estado
 
-# Obtén tu clave gratuita en https://dashboard.api-football.com/register
-# Deja vacío ("") para usar solo ESPN
 API_FOOTBALL_KEY = "Lamalaactitud1986."
 
 # ════════════════════════════════════════════════════════════════
 #  CONSTANTES
 # ════════════════════════════════════════════════════════════════
 
-ESPN_BASE      = "https://site.api.espn.com/apis/site/v2/sports/soccer"
-APIF_BASE      = "https://v3.football.api-sports.io"
-HEADERS_ESPN   = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+ESPN_BASE    = "https://site.api.espn.com/apis/site/v2/sports/soccer"
+APIF_BASE    = "https://v3.football.api-sports.io"
+HEADERS_ESPN = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 
 STATS_MAP = {
     "possessionPct":  "Posesión (%)",
@@ -72,12 +72,16 @@ APIF_KEY_MAP = {
     "expected_goals":   "xG",
 }
 
+ESTADOS_FINALES = {
+    "STATUS_FINAL", "STATUS_FULL_TIME", "STATUS_FINAL_AET",
+    "STATUS_FINAL_PEN", "STATUS_ABANDONED", "STATUS_POSTPONED",
+}
+
 # ════════════════════════════════════════════════════════════════
 #  UTILIDADES
 # ════════════════════════════════════════════════════════════════
 
 def _n(val):
-    """Convierte a float de forma segura."""
     try:
         return float(str(val).replace("%", "").strip())
     except (TypeError, ValueError):
@@ -87,7 +91,6 @@ def _sim(a, b):
     return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
 def _wrap(texto, ancho=68, indent="  "):
-    """Ajusta texto a ancho de línea."""
     palabras = texto.split()
     lineas, linea = [], indent
     for p in palabras:
@@ -100,19 +103,128 @@ def _wrap(texto, ancho=68, indent="  "):
         lineas.append(linea.rstrip())
     return "\n".join(lineas)
 
+def _extraer_minuto(match_time):
+    m = re.search(r'(\d+)', str(match_time))
+    return int(m.group(1)) if m else None
+
+def _header_tiempo(match_time):
+    hora = datetime.now().strftime("%H:%M")
+    if match_time == "HT":
+        return f"[{hora}  |  MEDIO TIEMPO]"
+    elif match_time in ("FT", "AET", "AP"):
+        return f"[{hora}  |  FIN DEL PARTIDO]"
+    else:
+        minuto = _extraer_minuto(match_time)
+        if minuto:
+            return f"[{hora}  |  Min. {minuto}']"
+        return f"[{hora}  |  {match_time}]"
+
+def _es_estado_final(info):
+    state       = info.get("state", "")
+    status_name = info.get("status_name", "").upper()
+    match_time  = info.get("match_time", "")
+    return (state == "post" or
+            status_name in ESTADOS_FINALES or
+            match_time in ("FT", "AET", "AP"))
+
+# ════════════════════════════════════════════════════════════════
+#  HISTORIAL DE EVOLUCIÓN
+# ════════════════════════════════════════════════════════════════
+
+def guardar_snapshot(history, info, stats):
+    history.append({
+        "ts":         datetime.now().strftime("%H:%M"),
+        "match_time": info.get("match_time", ""),
+        "minuto":     _extraer_minuto(info.get("match_time", "")),
+        "score_h":    info.get("home_score", "0"),
+        "score_a":    info.get("away_score", "0"),
+        "stats":      {"home": dict(stats.get("home", {})),
+                       "away": dict(stats.get("away", {}))},
+    })
+
+def tabla_evolucion(history, h, a):
+    if len(history) < 2:
+        return ""
+    claves = [
+        ("possessionPct", "Posesión (%)  "),
+        ("totalShots",    "Tiros totales "),
+        ("shotsOnTarget", "Al arco       "),
+        ("wonCorners",    "Córners       "),
+    ]
+    lineas = []
+    for clave, label in claves:
+        puntos = []
+        for snap in history:
+            vh = _n(snap["stats"]["home"].get(clave))
+            va = _n(snap["stats"]["away"].get(clave))
+            tag = f"min.{snap['minuto']}" if snap["minuto"] else snap["ts"]
+            if vh is not None and va is not None:
+                es_pct = "pct" in clave.lower()
+                fmt = f"{vh:.0f}{'%' if es_pct else ''}-{va:.0f}{'%' if es_pct else ''}"
+                puntos.append(f"{tag}({fmt})")
+        if len(puntos) >= 2:
+            lineas.append(f"  {label}: " + " → ".join(puntos))
+    return "\n".join(lineas)
+
+def _interpretar_evolucion(history, h, a):
+    if len(history) < 2:
+        return ""
+    first, last = history[0], history[-1]
+    partes = []
+
+    pos_h_ini = _n(first["stats"]["home"].get("possessionPct"))
+    pos_h_fin = _n(last["stats"]["home"].get("possessionPct"))
+    if pos_h_ini is not None and pos_h_fin is not None:
+        diff = pos_h_fin - pos_h_ini
+        if diff >= 8:
+            partes.append(
+                f"{h} fue ganando el control progresivamente: de {pos_h_ini:.0f}% a "
+                f"{pos_h_fin:.0f}% de posesión. La propuesta local se impuso con el tiempo."
+            )
+        elif diff <= -8:
+            partes.append(
+                f"{h} cedió el dominio con el correr del partido ({pos_h_ini:.0f}% → "
+                f"{pos_h_fin:.0f}%). {a} tomó el control en la segunda fase del juego."
+            )
+
+    sht_h_ini = _n(first["stats"]["home"].get("totalShots"))
+    sht_h_fin = _n(last["stats"]["home"].get("totalShots"))
+    sht_a_ini = _n(first["stats"]["away"].get("totalShots"))
+    sht_a_fin = _n(last["stats"]["away"].get("totalShots"))
+    if all(v is not None for v in [sht_h_ini, sht_h_fin, sht_a_ini, sht_a_fin]):
+        ritmo_h = sht_h_fin - sht_h_ini
+        ritmo_a = sht_a_fin - sht_a_ini
+        if ritmo_h > ritmo_a + 3:
+            partes.append(
+                f"{h} fue el equipo más insistente en la búsqueda del arco, "
+                f"acumulando {sht_h_fin:.0f} remates en total."
+            )
+        elif ritmo_a > ritmo_h + 3:
+            partes.append(
+                f"{a} incrementó su presión ofensiva a lo largo del partido, "
+                f"terminando con {sht_a_fin:.0f} remates totales."
+            )
+    return " ".join(partes)
+
 # ════════════════════════════════════════════════════════════════
 #  FUENTE ESPN
 # ════════════════════════════════════════════════════════════════
 
-def espn_live_events():
+def _espn_all_events():
     try:
         r = requests.get(f"{ESPN_BASE}/all/scoreboard", headers=HEADERS_ESPN, timeout=15)
         r.raise_for_status()
-        data = r.json()
-        vivos = [e for e in data.get("events", [])
+        return r.json().get("events", [])
+    except Exception:
+        return []
+
+def espn_live_events():
+    try:
+        todos = _espn_all_events()
+        vivos = [e for e in todos
                  if e.get("competitions", [{}])[0].get("status", {})
                     .get("type", {}).get("state") == "in"]
-        return vivos or data.get("events", [])
+        return vivos or todos
     except Exception:
         return None
 
@@ -140,23 +252,24 @@ def espn_parse_event(ev):
     is_ht       = ("HALF" in status_name.upper() or
                    detail.upper() in ("HT", "HALF TIME", "HALFTIME"))
 
-    if state == "post":       match_time = "FT"
-    elif state == "pre":      match_time = detail or "Por jugar"
-    elif is_ht:               match_time = "HT"
-    else:                     match_time = clock or detail or "En vivo"
+    if state == "post":   match_time = "FT"
+    elif state == "pre":  match_time = detail or "Por jugar"
+    elif is_ht:           match_time = "HT"
+    else:                 match_time = clock or detail or "En vivo"
 
     return {
-        "home_name":  home.get("team", {}).get("displayName", "Local"),
-        "away_name":  away.get("team", {}).get("displayName", "Visitante"),
-        "home_score": home.get("score", "0"),
-        "away_score": away.get("score", "0"),
-        "match_time": match_time,
-        "state":      state,
-        "is_ht":      is_ht,
-        "period":     period,
-        "tournament": ev.get("name", "") or ev.get("season", {}).get("slug", ""),
-        "event_id":   ev.get("id", ""),
-        "league":     ev.get("league", {}).get("slug", "all"),
+        "home_name":   home.get("team", {}).get("displayName", "Local"),
+        "away_name":   away.get("team", {}).get("displayName", "Visitante"),
+        "home_score":  home.get("score", "0"),
+        "away_score":  away.get("score", "0"),
+        "match_time":  match_time,
+        "state":       state,
+        "is_ht":       is_ht,
+        "period":      period,
+        "status_name": status_name,
+        "tournament":  ev.get("name", "") or ev.get("season", {}).get("slug", ""),
+        "event_id":    ev.get("id", ""),
+        "league":      ev.get("league", {}).get("slug", "all"),
     }
 
 def espn_parse_stats(summary):
@@ -185,9 +298,10 @@ def apif_find_fixture(home_name, away_name):
         best_score, best = 0, None
         for fx in fixtures:
             t = fx.get("teams", {})
-            h, a = t.get("home", {}).get("name", ""), t.get("away", {}).get("name", "")
-            sc = max((_sim(home_name, h) + _sim(away_name, a)) / 2,
-                     (_sim(home_name, a) + _sim(away_name, h)) / 2)
+            h_n = t.get("home", {}).get("name", "")
+            a_n = t.get("away", {}).get("name", "")
+            sc = max((_sim(home_name, h_n) + _sim(away_name, a_n)) / 2,
+                     (_sim(home_name, a_n) + _sim(away_name, h_n)) / 2)
             if sc > best_score:
                 best_score, best = sc, fx
         return best if best_score >= 0.50 else None
@@ -223,26 +337,26 @@ def merge_stats(espn, apif):
     return merged
 
 # ════════════════════════════════════════════════════════════════
-#  MOTOR DE ANÁLISIS TÁCTICO — 4 lecturas independientes
+#  MOTOR DE ANÁLISIS TÁCTICO
 # ════════════════════════════════════════════════════════════════
 
-def analisis_tactico(info, stats):
-    h, a   = info["home_name"], info["away_name"]
+def analisis_tactico(info, stats, history=None):
+    h, a    = info["home_name"], info["away_name"]
     hs, as_ = stats["home"], stats["away"]
 
-    pos_h  = _n(hs.get("possessionPct"));  pos_a  = _n(as_.get("possessionPct"))
-    sht_h  = _n(hs.get("totalShots"));     sht_a  = _n(as_.get("totalShots"))
-    sot_h  = _n(hs.get("shotsOnTarget"));  sot_a  = _n(as_.get("shotsOnTarget"))
-    cor_h  = _n(hs.get("wonCorners"));     cor_a  = _n(as_.get("wonCorners"))
-    foul_h = _n(hs.get("foulsCommitted")); foul_a = _n(as_.get("foulsCommitted"))
-    yc_h   = _n(hs.get("yellowCards"));    yc_a   = _n(as_.get("yellowCards"))
-    rc_h   = _n(hs.get("redCards"));       rc_a   = _n(as_.get("redCards"))
-    sav_h  = _n(hs.get("saves"));          sav_a  = _n(as_.get("saves"))
-    ptot_h = _n(hs.get("passesTotal"))
-    pok_h  = _n(hs.get("passesAccurate"))
-    xg_h   = _n(hs.get("xG"));            xg_a   = _n(as_.get("xG"))
-    off_h  = _n(hs.get("offsides"));       off_a  = _n(as_.get("offsides"))
-    gh     = _n(info["home_score"]);        ga     = _n(info["away_score"])
+    pos_h  = _n(hs.get("possessionPct"));   pos_a  = _n(as_.get("possessionPct"))
+    sht_h  = _n(hs.get("totalShots"));      sht_a  = _n(as_.get("totalShots"))
+    sot_h  = _n(hs.get("shotsOnTarget"));   sot_a  = _n(as_.get("shotsOnTarget"))
+    cor_h  = _n(hs.get("wonCorners"));      cor_a  = _n(as_.get("wonCorners"))
+    foul_h = _n(hs.get("foulsCommitted"));  foul_a = _n(as_.get("foulsCommitted"))
+    yc_h   = _n(hs.get("yellowCards"));     yc_a   = _n(as_.get("yellowCards"))
+    rc_h   = _n(hs.get("redCards"));        rc_a   = _n(as_.get("redCards"))
+    sav_h  = _n(hs.get("saves"));           sav_a  = _n(as_.get("saves"))
+    ptot_h = _n(hs.get("passesTotal"));     ptot_a = _n(as_.get("passesTotal"))
+    pok_h  = _n(hs.get("passesAccurate"));  pok_a  = _n(as_.get("passesAccurate"))
+    xg_h   = _n(hs.get("xG"));             xg_a   = _n(as_.get("xG"))
+    off_h  = _n(hs.get("offsides"));        off_a  = _n(as_.get("offsides"))
+    gh     = _n(info["home_score"]);         ga     = _n(info["away_score"])
 
     lecturas = {}
 
@@ -256,7 +370,7 @@ def analisis_tactico(info, stats):
         if dif < 5:
             t.append(f"La pelota se reparte de manera casi equitativa ({pos_h:.0f}%–{pos_a:.0f}%). "
                      "El mediocampo es tierra de nadie; las disputas en zona media deciden quién "
-                     "toma la iniciativa de un lado al otro.")
+                     "toma la iniciativa.")
         elif dif < 15:
             t.append(f"{dom} maneja más el balón ({myor:.0f}% frente al {mnor:.0f}% de {sub}). "
                      f"{sub} cede el centro del campo y se organiza para salir en transición rápida.")
@@ -279,9 +393,8 @@ def analisis_tactico(info, stats):
         tot_cor = cor_h + cor_a
         if tot_cor >= 6:
             dom_c = h if cor_h > cor_a else a
-            t.append(f"{tot_cor:.0f} saques de esquina en total revelan un partido muy disputado "
-                     f"en los flancos. {dom_c} es quien más insiste con centros al área "
-                     f"({max(cor_h,cor_a):.0f} córners).")
+            t.append(f"{tot_cor:.0f} saques de esquina revelan un partido muy disputado en los flancos. "
+                     f"{dom_c} es quien más insiste con centros al área ({max(cor_h, cor_a):.0f} córners).")
 
     lecturas["territorial"] = " ".join(t) if t else \
         "Datos territoriales aún insuficientes. Se completará en próximas actualizaciones."
@@ -307,16 +420,22 @@ def analisis_tactico(info, stats):
                          f"remates van al arco ({ratio*100:.0f}%). Calidad por encima de cantidad.")
             elif ratio < 0.30 and sht >= 6:
                 o.append(f"{nombre} genera pero no afina: solo {sot:.0f} de {sht:.0f} "
-                         f"tiros entre los tres palos. Presencia ofensiva sin la puntería necesaria.")
+                         "tiros entre los tres palos.")
 
     if xg_h is not None and xg_a is not None:
         o.append(f"Los goles esperados sitúan a {h} en {xg_h:.2f} xG y a {a} en {xg_a:.2f} xG.")
         if gh is not None and gh > xg_h + 0.5:
             o.append(f"{h} está sobrerendiendo respecto a la calidad de sus ocasiones.")
         elif gh is not None and gh < xg_h - 0.5:
-            o.append(f"{h} está siendo ineficaz: el marcador le debe más goles de los que refleja.")
+            o.append(f"{h} está siendo ineficaz: el marcador le debe más goles.")
         if ga is not None and ga > xg_a + 0.5:
             o.append(f"{a} convierte por encima del valor de sus oportunidades.")
+
+    if cor_h is not None and gh is not None and cor_h >= 3 and gh >= 1:
+        o.append(f"La amenaza en pelota parada de {h} ({cor_h:.0f} córners) puede ser "
+                 "un factor determinante en la creación de peligro real.")
+    if cor_a is not None and ga is not None and cor_a >= 3 and ga >= 1:
+        o.append(f"{a} explota los saques de esquina ({cor_a:.0f}) como vía de llegada al arco.")
 
     lecturas["ofensiva"] = " ".join(o) if o else \
         "Estadísticas ofensivas en construcción. Se actualizará con más datos."
@@ -344,8 +463,8 @@ def analisis_tactico(info, stats):
             d.append(f"{a} comete {foul_a:.0f} faltas, evidenciando dificultad para contener "
                      f"a {h} sin recurrir al contacto.")
         if tot_f >= 28:
-            d.append(f"El partido es físicamente muy intenso: {tot_f:.0f} faltas en total. "
-                     "El árbitro debe mantener el control para que la dureza no condicione el juego.")
+            d.append(f"Partido físicamente muy intenso: {tot_f:.0f} faltas en total. "
+                     "El árbitro debe mantener el control.")
 
     if yc_h is not None and yc_a is not None:
         tot_am = (yc_h or 0) + (yc_a or 0)
@@ -358,16 +477,14 @@ def analisis_tactico(info, stats):
             d.append(f"{a} tiene {yc_a:.0f} amarillas y juega al límite.")
 
     if rc_h and rc_h >= 1:
-        d.append(f"INFERIORIDAD NUMÉRICA: {h} juega con un hombre menos. "
-                 "Su esquema defensivo se reconfigura sobre la marcha.")
+        d.append(f"INFERIORIDAD NUMÉRICA: {h} juega con un hombre menos.")
     if rc_a and rc_a >= 1:
-        d.append(f"INFERIORIDAD NUMÉRICA: {a} está con un jugador menos. "
-                 "El bloque bajo se vuelve la única táctica viable para el visitante.")
+        d.append(f"INFERIORIDAD NUMÉRICA: {a} está con un jugador menos.")
 
     lecturas["defensiva"] = " ".join(d) if d else \
         "El partido transcurre sin grandes alarmas defensivas hasta el momento."
 
-    # ── 4. TRANSICIONES Y RITMO ─────────────────────────────────────────────────
+    # ── 4. TRANSICIONES, RITMO Y DIMENSIONES ALTERNATIVAS ──────────────────────
     tr = []
     if pos_h is not None and sht_h is not None and sht_a is not None:
         if pos_h < 44 and sht_h >= (sht_a or 0):
@@ -376,15 +493,14 @@ def analisis_tactico(info, stats):
                       "contraataque, explotando los espacios que deja el oponente al avanzar.")
         if pos_a is not None and pos_a < 44 and sht_a >= (sht_h or 0):
             tr.append(f"{a} es un equipo de transiciones puras: el {pos_a:.0f}% de posesión "
-                      "contrasta con su capacidad de generar ocasiones. El bloque bajo y la "
-                      "velocidad en profundidad son su principal arma.")
+                      "contrasta con su capacidad de generar ocasiones.")
         if pos_h > 58 and sht_h and sht_h >= 8:
             tr.append(f"{h} impone un ritmo muy alto: dominio territorial y alto volumen de "
-                      "remates. El equipo presiona alto y convierte cada recuperación en ocasión.")
+                      "remates. Presiona alto y convierte cada recuperación en ocasión.")
 
     if off_h is not None and off_h >= 4:
-        tr.append(f"{h} cae {off_h:.0f} veces en offside; busca insistentemente la espalda a "
-                  "la defensa rival pero sin la sincronía necesaria en las carreras.")
+        tr.append(f"{h} cae {off_h:.0f} veces en offside; busca insistentemente la espalda "
+                  "a la defensa rival pero sin la sincronía necesaria.")
     if off_a is not None and off_a >= 4:
         tr.append(f"{a} queda {off_a:.0f} veces adelantado; la línea defensiva local los atrapa.")
 
@@ -394,19 +510,56 @@ def analisis_tactico(info, stats):
             tr.append("El partido fluye con pocas interrupciones y bastante llegada al arco. "
                       "Encuentro de ritmo alto que premia a los equipos con buen estado físico.")
 
+    # Dimensiones alternativas cuando los datos básicos no generan texto
+    if not tr:
+        if cor_h is not None and cor_a is not None and (cor_h + cor_a) >= 4:
+            dom_c = h if cor_h >= cor_a else a
+            resto = a if cor_h >= cor_a else h
+            tr.append(f"El partido se decide mucho en pelota parada: "
+                      f"{cor_h + cor_a:.0f} córners en total. "
+                      f"{dom_c} lleva la ventaja ({max(cor_h, cor_a):.0f} vs {min(cor_h, cor_a):.0f}) "
+                      f"e impone su juego aéreo sobre {resto}.")
+
+        if foul_a is not None and ptot_h is not None and ptot_h >= 100 and foul_a >= 10:
+            tr.append(f"{a} ejerce presión alta sobre {h}: {foul_a:.0f} faltas cometidas "
+                      "sugieren una línea defensiva adelantada que busca recuperar en campo rival.")
+        elif foul_h is not None and ptot_a is not None and ptot_a >= 100 and foul_h >= 10:
+            tr.append(f"{h} presiona alto sobre {a}: {foul_h:.0f} interrupciones denotan "
+                      "una propuesta de presión intensa en campo contrario.")
+
+        if ptot_h is not None and ptot_a is not None and sht_h is not None and sht_a is not None:
+            ratio_pases = ptot_h / max(ptot_a, 1)
+            if ratio_pases >= 1.5 and sht_h >= sht_a:
+                tr.append(f"{h} domina en todos los sectores: más circulación "
+                          f"({ptot_h:.0f} vs {ptot_a:.0f} pases) y más llegada al arco "
+                          f"({sht_h:.0f} vs {sht_a:.0f} remates). Propuesta integral.")
+            elif ratio_pases <= 0.67 and sht_a >= sht_h:
+                tr.append(f"{a} controla construcción y proyección ofensiva: "
+                          f"{ptot_a:.0f} pases y {sht_a:.0f} remates marcan su superioridad.")
+
+        if history and len(history) >= 2:
+            foul_h_early = _n(history[0]["stats"]["home"].get("foulsCommitted"))
+            foul_a_early = _n(history[0]["stats"]["away"].get("foulsCommitted"))
+            if (foul_h is not None and foul_h_early is not None and
+                    foul_a is not None and foul_a_early is not None):
+                incr_total = (foul_h - foul_h_early) + (foul_a - foul_a_early)
+                if incr_total >= 8:
+                    tr.append("El nivel de faltas se incrementó significativamente en el tramo "
+                              "final, señal de desgaste físico y mayor tensión táctica.")
+
     lecturas["transiciones"] = " ".join(tr) if tr else \
-        "El ritmo aún no permite definir con claridad el modelo de transiciones de cada equipo."
+        "El perfil táctico de ambos equipos está por definirse con más datos."
 
     return lecturas
 
 # ════════════════════════════════════════════════════════════════
-#  ANÁLISIS DE PORTEROS (para reporte FT)
+#  ANÁLISIS DE PORTEROS
 # ════════════════════════════════════════════════════════════════
 
 def analisis_porteros(info, stats):
-    h, a   = info["home_name"], info["away_name"]
+    h, a    = info["home_name"], info["away_name"]
     hs, as_ = stats["home"], stats["away"]
-    partes = []
+    partes  = []
 
     for nombre, sav, ptot, pok in [
         (h, _n(hs.get("saves")), _n(hs.get("passesTotal")), _n(hs.get("passesAccurate"))),
@@ -448,16 +601,9 @@ def _estadisticas_tabla(stats, h, a):
             lines.append(f"  {display:<26}  {str(hv or '—'):>14}  {str(av or '—'):<14}")
     return "\n".join(lines)
 
-def reporte_ht(info, stats, lecturas, ts):
+def reporte_ht(info, stats, lecturas, history, ts):
     h, a = info["home_name"], info["away_name"]
     marcador = f"{h} {info['home_score']} – {info['away_score']} {a}"
-
-    secciones = [
-        ("CONTROL TERRITORIAL",   lecturas.get("territorial", "Sin datos.")),
-        ("EFICACIA OFENSIVA",     lecturas.get("ofensiva",    "Sin datos.")),
-        ("SOLIDEZ DEFENSIVA",     lecturas.get("defensiva",   "Sin datos.")),
-        ("RITMO Y TRANSICIONES",  lecturas.get("transiciones","Sin datos.")),
-    ]
 
     lines = [
         "", SEP2,
@@ -468,7 +614,6 @@ def reporte_ht(info, stats, lecturas, ts):
         SEP2, "",
     ]
 
-    # Resumen ejecutivo
     gh, ga = _n(info["home_score"]), _n(info["away_score"])
     if gh is not None and ga is not None:
         if gh > ga:
@@ -479,14 +624,27 @@ def reporte_ht(info, stats, lecturas, ts):
             res = f"Empate {gh:.0f}–{ga:.0f} al término de la primera mitad."
         lines += ["RESUMEN EJECUTIVO", SEP, _wrap(res), ""]
 
-    for titulo, texto in secciones:
+    secciones = [
+        ("CONTROL TERRITORIAL",  "territorial"),
+        ("EFICACIA OFENSIVA",    "ofensiva"),
+        ("SOLIDEZ DEFENSIVA",    "defensiva"),
+        ("RITMO Y TRANSICIONES", "transiciones"),
+    ]
+    for titulo, clave in secciones:
+        texto = lecturas.get(clave, "")
         if texto and "insuficientes" not in texto and "construcción" not in texto:
             lines += [titulo, SEP, _wrap(texto), ""]
+
+    evo_tabla = tabla_evolucion(history, h, a)
+    if evo_tabla:
+        lines += ["EVOLUCIÓN DE ESTADÍSTICAS CLAVE", SEP, evo_tabla, ""]
+        evo_interp = _interpretar_evolucion(history, h, a)
+        if evo_interp:
+            lines += ["LECTURA DE LA EVOLUCIÓN", SEP, _wrap(evo_interp), ""]
 
     lines += ["ESTADÍSTICAS DEL PRIMER TIEMPO", SEP,
               _estadisticas_tabla(stats, h, a), ""]
 
-    # Proyección
     lines += ["PROYECCIÓN PARA EL SEGUNDO TIEMPO", SEP]
     if gh is not None and ga is not None:
         if gh < ga:
@@ -503,9 +661,10 @@ def reporte_ht(info, stats, lecturas, ts):
     return "\n".join(lines)
 
 
-def reporte_ft(info, stats, lecturas, stats_ht, ts):
-    h, a = info["home_name"], info["away_name"]
+def reporte_ft(info, stats, lecturas, stats_ht, history, ts):
+    h, a   = info["home_name"], info["away_name"]
     marcador = f"{h} {info['home_score']} – {info['away_score']} {a}"
+    gh, ga = _n(info["home_score"]), _n(info["away_score"])
 
     lines = [
         "", SEP2,
@@ -516,63 +675,161 @@ def reporte_ft(info, stats, lecturas, stats_ht, ts):
         SEP2, "",
     ]
 
-    # 1. Lectura global
-    gh, ga = _n(info["home_score"]), _n(info["away_score"])
+    # 1. QUÉ DEFINIÓ EL PARTIDO
+    lines += ["1. QUÉ DEFINIÓ EL PARTIDO", SEP]
+    pos_h = _n(stats["home"].get("possessionPct"))
+    pos_a = _n(stats["away"].get("possessionPct"))
+    sht_h = _n(stats["home"].get("totalShots"))
+    sht_a = _n(stats["away"].get("totalShots"))
+    sot_h = _n(stats["home"].get("shotsOnTarget"))
+    sot_a = _n(stats["away"].get("shotsOnTarget"))
+    xg_h  = _n(stats["home"].get("xG"))
+    xg_a  = _n(stats["away"].get("xG"))
+
+    definicion = []
     if gh is not None and ga is not None:
         if gh > ga:
-            global_txt = (f"{h} venció {gh:.0f}–{ga:.0f} a {a} en un partido donde "
-                          "las estadísticas confirman el dominio del ganador.")
+            ganador, perdedor, gf, gc = h, a, gh, ga
         elif ga > gh:
-            global_txt = (f"{a} se llevó los tres puntos {ga:.0f}–{gh:.0f}. "
-                          "El visitante logró imponer su propuesta sobre {h}.")
+            ganador, perdedor, gf, gc = a, h, ga, gh
         else:
-            global_txt = (f"Empate {gh:.0f}–{ga:.0f} en un encuentro donde ninguno "
-                          "logró la superioridad necesaria para sentenciar.")
-        lines += ["1. LECTURA GLOBAL DEL PARTIDO", SEP, _wrap(global_txt), ""]
+            ganador = perdedor = None
+            gf = gc = gh
 
-    # 2–5. Lecturas tácticas
-    for titulo, clave in [
-        ("2. DOMINIO TERRITORIAL",      "territorial"),
-        ("3. PROPUESTA OFENSIVA",       "ofensiva"),
-        ("4. COMPORTAMIENTO DEFENSIVO", "defensiva"),
-        ("5. MODELO DE TRANSICIONES",   "transiciones"),
-    ]:
-        texto = lecturas.get(clave, "")
-        if texto:
-            lines += [titulo, SEP, _wrap(texto), ""]
+        if ganador:
+            if xg_h is not None and xg_a is not None:
+                xg_gan = xg_h if ganador == h else xg_a
+                xg_per = xg_a if ganador == h else xg_h
+                if xg_gan > xg_per + 0.3:
+                    definicion.append(
+                        f"{ganador} mereció ganar según los números: {xg_gan:.2f} xG contra "
+                        f"{xg_per:.2f} de {perdedor}. La victoria refleja el dominio real en "
+                        "la generación de ocasiones."
+                    )
+                elif xg_per > xg_gan + 0.3:
+                    definicion.append(
+                        f"Victoria de {ganador} contra el marcador esperado: {perdedor} generó "
+                        f"más peligro ({xg_per:.2f} xG vs {xg_gan:.2f}) pero no lo convirtió. "
+                        "La eficacia o la actuación del portero ganador cambiaron el partido."
+                    )
+                else:
+                    definicion.append(
+                        f"Los xG estuvieron parejos ({xg_h:.2f} – {xg_a:.2f}). "
+                        f"{ganador} encontró la diferencia en la definición, no en la creación."
+                    )
+            elif sht_h is not None and sht_a is not None:
+                sht_gan = sht_h if ganador == h else sht_a
+                sht_per = sht_a if ganador == h else sht_h
+                if sht_gan > sht_per + 4:
+                    definicion.append(
+                        f"{ganador} fue superior en la generación de peligro ({sht_gan:.0f} remates) "
+                        "y esa presión constante terminó siendo decisiva."
+                    )
+                else:
+                    definicion.append(
+                        f"{ganador} se impuso {gf:.0f}–{gc:.0f} en un partido equilibrado. "
+                        "La diferencia estuvo en los detalles."
+                    )
+        else:
+            definicion.append(
+                f"Empate {gh:.0f}–{ga:.0f}. Ninguno encontró la superioridad suficiente "
+                "para sentenciar. El resultado es justo para ambos."
+            )
+    lines.append(_wrap(" ".join(definicion)) if definicion else "  Sin datos suficientes.")
+    lines.append("")
 
-    # 6. Evolución HT → FT
+    # 2. QUIÉN PROPUSO MÁS VS QUIÉN RESOLVIÓ MEJOR
+    lines += ["2. QUIÉN PROPUSO MÁS Y QUIÉN RESOLVIÓ MEJOR", SEP]
+    propuesta = []
+    if pos_h is not None and pos_a is not None:
+        if pos_h > pos_a + 5:
+            if gh is not None and ga is not None and ga >= gh:
+                propuesta.append(
+                    f"{h} propuso el juego con el {pos_h:.0f}% de la pelota, "
+                    f"pero fue {a} quien resolvió mejor: menor posesión y mayor efectividad."
+                )
+            else:
+                propuesta.append(
+                    f"{h} llevó la iniciativa del partido con {pos_h:.0f}% de posesión, "
+                    "imponiendo su propuesta táctica."
+                )
+        elif pos_a > pos_h + 5:
+            if gh is not None and ga is not None and gh >= ga:
+                propuesta.append(
+                    f"{a} dominó el balón ({pos_a:.0f}%) pero {h} resultó más efectivo, "
+                    "confirmando que la posesión no siempre se traduce en resultado."
+                )
+            else:
+                propuesta.append(
+                    f"{a} llevó la iniciativa del juego con {pos_a:.0f}% de posesión."
+                )
+        else:
+            propuesta.append(
+                f"La posesión estuvo muy repartida ({pos_h:.0f}%–{pos_a:.0f}%). "
+                "Ninguno impuso un claro dominio territorial."
+            )
+        if sot_h is not None and sot_a is not None:
+            if sot_h > sot_a + 2:
+                propuesta.append(f"{h} fue más preciso en sus disparos: {sot_h:.0f} tiros al arco.")
+            elif sot_a > sot_h + 2:
+                propuesta.append(f"{a} apuntó mejor: {sot_a:.0f} disparos entre los tres palos.")
+    lines.append(_wrap(" ".join(propuesta)) if propuesta else "  Datos insuficientes.")
+    lines.append("")
+
+    # 3. MOMENTOS DE INFLEXIÓN
+    lines += ["3. MOMENTOS DE INFLEXIÓN", SEP]
+    inflexion = []
     if stats_ht:
-        evo = []
-        pos_ht = _n(stats_ht["home"].get("possessionPct"))
-        pos_ft = _n(stats["home"].get("possessionPct"))
-        if pos_ht is not None and pos_ft is not None and abs(pos_ft - pos_ht) >= 5:
-            dir_t = "aumentó" if pos_ft > pos_ht else "redujo"
-            evo.append(f"{h} {dir_t} su posesión del primer al segundo tiempo "
-                       f"({pos_ht:.0f}% → {pos_ft:.0f}%), señal de un ajuste táctico en el entretiempo.")
+        pos_ht_h = _n(stats_ht["home"].get("possessionPct"))
+        pos_ft_h = _n(stats["home"].get("possessionPct"))
+        if pos_ht_h is not None and pos_ft_h is not None and abs(pos_ft_h - pos_ht_h) >= 7:
+            dir_t = "aumentó" if pos_ft_h > pos_ht_h else "redujo"
+            equipo_cambio = h if pos_ft_h > pos_ht_h else a
+            inflexion.append(
+                f"El entretiempo cambió el partido: {equipo_cambio} {dir_t} notablemente "
+                f"su control territorial ({pos_ht_h:.0f}% → {pos_ft_h:.0f}%), "
+                "señal de un ajuste táctico claro en el descanso."
+            )
 
         sht_ht_h = _n(stats_ht["home"].get("totalShots"))
         sht_ft_h = _n(stats["home"].get("totalShots"))
         sht_ht_a = _n(stats_ht["away"].get("totalShots"))
         sht_ft_a = _n(stats["away"].get("totalShots"))
-        if sht_ht_h is not None and sht_ft_h is not None:
-            if sht_ft_h > sht_ht_h + 3:
-                evo.append(f"{h} fue más agresivo en el segundo tiempo, "
-                           "incrementando significativamente su llegada al arco.")
-        if sht_ht_a is not None and sht_ft_a is not None:
-            if sht_ft_a > sht_ht_a + 3:
-                evo.append(f"{a} intensificó su presión ofensiva tras el descanso.")
+        if all(v is not None for v in [sht_ht_h, sht_ft_h, sht_ht_a, sht_ft_a]):
+            incr_h = sht_ft_h - sht_ht_h
+            incr_a = sht_ft_a - sht_ht_a
+            if incr_h > incr_a + 4:
+                inflexion.append(
+                    f"{h} fue mucho más intenso en el segundo tiempo: "
+                    f"{incr_h:.0f} remates adicionales frente a {incr_a:.0f} de {a}."
+                )
+            elif incr_a > incr_h + 4:
+                inflexion.append(
+                    f"{a} intensificó su presión en la segunda mitad: "
+                    f"{incr_a:.0f} remates adicionales frente a {incr_h:.0f} de {h}."
+                )
 
-        if evo:
-            lines += ["6. EVOLUCIÓN: 1ª VS 2ª MITAD", SEP, _wrap(" ".join(evo)), ""]
+    if not inflexion:
+        inflexion.append("El partido mantuvo una línea táctica coherente de principio a fin, "
+                         "sin cambios bruscos en el dominio del juego.")
+    lines.append(_wrap(" ".join(inflexion)))
+    lines.append("")
 
-    # 7. Porteros
+    # 4. EVOLUCIÓN ESTADÍSTICA
+    evo_tabla = tabla_evolucion(history, h, a)
+    if evo_tabla:
+        lines += ["4. EVOLUCIÓN ESTADÍSTICA DEL PARTIDO", SEP, evo_tabla, ""]
+        evo_interp = _interpretar_evolucion(history, h, a)
+        if evo_interp:
+            lines += [_wrap(evo_interp), ""]
+
+    # 5. ANÁLISIS DE PORTEROS
     gk = analisis_porteros(info, stats)
     if gk:
-        lines += ["7. ANÁLISIS DE PORTEROS", SEP, _wrap(gk), ""]
+        lines += ["5. ANÁLISIS DE PORTEROS", SEP, _wrap(gk), ""]
 
-    # 8. Estadísticas finales
-    lines += ["8. CUADRO ESTADÍSTICO FINAL", SEP,
+    # 6. CUADRO ESTADÍSTICO FINAL
+    lines += ["6. CUADRO ESTADÍSTICO FINAL", SEP,
               _estadisticas_tabla(stats, h, a), ""]
 
     fuentes = "ESPN API" + (" + API-Football" if API_FOOTBALL_KEY else "")
@@ -586,7 +843,8 @@ def reporte_ft(info, stats, lecturas, stats_ht, ts):
 def mostrar_rich(info, stats, lecturas, num_act, apif_on):
     console = Console()
     console.clear()
-    fuentes = "ESPN" + (" + API-Football" if apif_on else "")
+    fuentes  = "ESPN" + (" + API-Football" if apif_on else "")
+    header_t = _header_tiempo(info["match_time"])
 
     console.print(Panel(
         f"[bold cyan]{info['tournament']}[/bold cyan]  [dim]· {fuentes}[/dim]",
@@ -595,8 +853,8 @@ def mostrar_rich(info, stats, lecturas, num_act, apif_on):
     console.print(Panel(
         f"[bold white]{info['home_name']}[/bold white]  "
         f"[bold yellow]{info['home_score']} – {info['away_score']}[/bold yellow]  "
-        f"[bold white]{info['away_name']}[/bold white]"
-        f"  [bold green][{info['match_time']}][/bold green]",
+        f"[bold white]{info['away_name']}[/bold white]  "
+        f"[bold green]{header_t}[/bold green]",
         title="PARTIDO EN VIVO", box=box.DOUBLE_EDGE, style="bold"))
 
     table = Table(show_header=True, header_style="bold magenta",
@@ -611,12 +869,12 @@ def mostrar_rich(info, stats, lecturas, num_act, apif_on):
         hv = stats["home"].get(key)
         av = stats["away"].get(key)
         if hv is not None or av is not None:
-            hs, as_ = str(hv or "—"), str(av or "—")
+            hs_s, as_s = str(hv or "—"), str(av or "—")
             hn, an = _n(hv), _n(av)
             if hn is not None and an is not None:
-                if hn > an: hs = f"[bold]{hs}[/bold]"
-                elif an > hn: as_ = f"[bold]{as_}[/bold]"
-            table.add_row(hs, display, as_)
+                if hn > an: hs_s = f"[bold]{hs_s}[/bold]"
+                elif an > hn: as_s = f"[bold]{as_s}[/bold]"
+            table.add_row(hs_s, display, as_s)
             filas += 1
     if filas == 0:
         table.add_row("—", "[dim]Sin datos aún[/dim]", "—")
@@ -635,8 +893,7 @@ def mostrar_rich(info, stats, lecturas, num_act, apif_on):
             console.print(f"\n[bold {color}]▶ {titulos[clave]}[/bold {color}]")
             console.print(f"  [white]{texto}[/white]")
 
-    ahora = datetime.now().strftime("%H:%M:%S")
-    console.print(f"\n[dim]Actualizado: {ahora}  ·  "
+    console.print(f"\n[dim]Actualizado: {datetime.now().strftime('%H:%M:%S')}  ·  "
                   f"#{num_act}  ·  Próxima en {INTERVALO_ACTUALIZACION//60} min  ·  "
                   "Ctrl+C para salir[/dim]")
 
@@ -647,14 +904,15 @@ def limpiar():
 
 def mostrar_plano(info, stats, lecturas, num_act, apif_on):
     limpiar()
-    ancho = 70
-    fuentes = "ESPN" + (" + API-Football" if apif_on else "")
+    ancho    = 70
+    fuentes  = "ESPN" + (" + API-Football" if apif_on else "")
+    header_t = _header_tiempo(info["match_time"])
     print(SEP2)
     print(f"  {info['tournament'][:60]}")
     print(f"  Fuentes: {fuentes}")
     print(SEP2)
     marcador = (f"{info['home_name']}  {info['home_score']} – "
-                f"{info['away_score']}  {info['away_name']}  [{info['match_time']}]")
+                f"{info['away_score']}  {info['away_name']}  {header_t}")
     print(marcador[:ancho].center(ancho))
     print(SEP)
     print(f"  {'LOCAL':^20}  {'ESTADÍSTICA':^22}  {'VISITANTE':^12}")
@@ -676,8 +934,7 @@ def mostrar_plano(info, stats, lecturas, num_act, apif_on):
             print(_wrap(texto))
 
     print(f"\n{SEP}")
-    ahora = datetime.now().strftime("%H:%M:%S")
-    print(f"  {ahora}  |  Update #{num_act}  |  Ctrl+C = salir")
+    print(f"  {datetime.now().strftime('%H:%M:%S')}  |  Update #{num_act}  |  Ctrl+C = salir")
     print(SEP2)
 
 
@@ -702,18 +959,18 @@ def seleccionar_partido(eventos):
         print(f"  {'#':>3}  {'LOCAL':<24} {'MARC':>6}  {'VISITANTE':<24}  {'EST':>8}  LIGA")
         print("-" * 88)
 
-    for i, info in enumerate(info_list, 1):
-        marc   = f"{info['home_score']}-{info['away_score']}"
-        estado = info["match_time"]
-        liga   = info["tournament"][:28]
+    for i, inf in enumerate(info_list, 1):
+        marc   = f"{inf['home_score']}-{inf['away_score']}"
+        estado = inf["match_time"]
+        liga   = inf["tournament"][:28]
         if RICH_AVAILABLE:
-            color = "green" if info["state"] == "in" else "dim"
-            table.add_row(str(i), info["home_name"], marc, info["away_name"],
+            color = "green" if inf["state"] == "in" else "dim"
+            table.add_row(str(i), inf["home_name"], marc, inf["away_name"],
                           f"[{color}]{estado}[/{color}]", liga)
         else:
-            vivo = " <<" if info["state"] == "in" else ""
-            print(f"  {i:>3}  {info['home_name']:<24} {marc:>6}  "
-                  f"{info['away_name']:<24}  {estado:>8}  {liga}{vivo}")
+            vivo = " <<" if inf["state"] == "in" else ""
+            print(f"  {i:>3}  {inf['home_name']:<24} {marc:>6}  "
+                  f"{inf['away_name']:<24}  {estado:>8}  {liga}{vivo}")
 
     if RICH_AVAILABLE:
         console.print(table)
@@ -735,14 +992,85 @@ def seleccionar_partido(eventos):
             print("\n  Saliendo..."); sys.exit(0)
 
 # ════════════════════════════════════════════════════════════════
+#  MONITOR DE ESTADO (chequeo cada 30 segundos)
+# ════════════════════════════════════════════════════════════════
+
+def _chequeo_rapido(event_id):
+    try:
+        todos = _espn_all_events()
+        ev = next((e for e in todos if str(e.get("id", "")) == str(event_id)), None)
+        if ev:
+            return espn_parse_event(ev)
+    except Exception:
+        pass
+    return None
+
+def _esperar_con_monitor(segundos, event_id, prev_period, ht_done):
+    """
+    Reemplaza time.sleep(segundos). Chequea el estado del partido
+    cada INTERVALO_MONITOR segundos. Retorna ('normal'|'ht'|'ft', info_rapida).
+    """
+    transcurrido = 0
+    while transcurrido < segundos:
+        dormir = min(INTERVALO_MONITOR, segundos - transcurrido)
+        time.sleep(dormir)
+        transcurrido += dormir
+
+        info_q = _chequeo_rapido(event_id)
+        if info_q is None:
+            continue
+
+        if _es_estado_final(info_q):
+            return 'ft', info_q
+
+        periodo_q = info_q.get("period", 1)
+        is_ht_q   = info_q.get("is_ht", False)
+        if not ht_done and (is_ht_q or (periodo_q >= 2 and prev_period < 2)):
+            return 'ht', info_q
+
+    return 'normal', None
+
+# ════════════════════════════════════════════════════════════════
 #  BUCLE PRINCIPAL
 # ════════════════════════════════════════════════════════════════
 
+def _fetch_full(event_id, league, evento, apif_fixture, apif_on):
+    sum_espn = espn_summary(event_id, league)
+    st_espn  = espn_parse_stats(sum_espn)
+    st_apif  = {"home": {}, "away": {}}
+    if apif_on and apif_fixture:
+        fid     = apif_fixture.get("fixture", {}).get("id")
+        st_apif = apif_get_stats(fid)
+    stats = merge_stats(st_espn, st_apif)
+
+    todos    = _espn_all_events()
+    ev_act   = next((e for e in todos if str(e.get("id", "")) == str(event_id)), evento)
+    info_act = espn_parse_event(ev_act)
+    return stats, info_act
+
+def _emitir(texto):
+    if RICH_AVAILABLE:
+        Console().clear()
+        Console().print(texto)
+    else:
+        limpiar()
+        print(texto)
+
+def _mensaje_cierre(info_act):
+    return (
+        f"\n{SEP2}\n"
+        f"  PARTIDO FINALIZADO — Análisis completado\n"
+        f"  {info_act['home_name']} {info_act['home_score']} – "
+        f"{info_act['away_score']} {info_act['away_name']}\n"
+        f"  {datetime.now().strftime('%d/%m/%Y %H:%M')}\n"
+        f"{SEP2}\n"
+    )
+
 def main():
     if RICH_AVAILABLE:
-        Console().print("\n[bold green]Football Live Analysis v2[/bold green] — cargando...\n")
+        Console().print("\n[bold green]Football Live Analysis v3[/bold green] — cargando...\n")
     else:
-        print("\nFootball Live Analysis v2 — cargando...\n")
+        print("\nFootball Live Analysis v3 — cargando...\n")
 
     eventos = espn_live_events()
     if eventos is None:
@@ -753,7 +1081,6 @@ def main():
     evento, info = seleccionar_partido(eventos)
     league, event_id = info["league"], info["event_id"]
 
-    # Buscar en API-Football
     apif_fixture = None
     if API_FOOTBALL_KEY:
         print("Buscando en API-Football...")
@@ -770,68 +1097,71 @@ def main():
     num_act     = 0
     ht_done     = False
     stats_ht    = None
+    history     = []
     prev_period = 1
 
     time.sleep(1)
 
     while True:
         num_act += 1
-
-        # Obtener datos
-        sum_espn  = espn_summary(event_id, league)
-        st_espn   = espn_parse_stats(sum_espn)
-        st_apif   = {"home": {}, "away": {}}
-        if apif_on and apif_fixture:
-            fid     = apif_fixture.get("fixture", {}).get("id")
-            st_apif = apif_get_stats(fid)
-        stats = merge_stats(st_espn, st_apif)
-
-        # Info actualizada
-        evs_act  = espn_live_events() or [evento]
-        ev_act   = next((e for e in evs_act if e.get("id") == event_id), evento)
-        info_act = espn_parse_event(ev_act)
-
-        lecturas = analisis_tactico(info_act, stats)
+        stats, info_act = _fetch_full(event_id, league, evento, apif_fixture, apif_on)
+        lecturas = analisis_tactico(info_act, stats, history)
+        guardar_snapshot(history, info_act, stats)
 
         if RICH_AVAILABLE:
             mostrar_rich(info_act, stats, lecturas, num_act, apif_on)
         else:
             mostrar_plano(info_act, stats, lecturas, num_act, apif_on)
 
-        # ── Reporte HT ────────────────────────────────────────────────────────
+        # Verificar HT en el ciclo principal
         periodo_actual = info_act.get("period", 1)
         es_ht = info_act.get("is_ht", False) or (periodo_actual >= 2 and prev_period < 2)
 
         if not ht_done and es_ht:
             stats_ht = {"home": dict(stats["home"]), "away": dict(stats["away"])}
-            ts       = datetime.now().strftime("%d/%m/%Y %H:%M")
-            rpt      = reporte_ht(info_act, stats, lecturas, ts)
-            if RICH_AVAILABLE:
-                Console().clear()
-                Console().print(rpt)
-            else:
-                limpiar()
-                print(rpt)
+            ts  = datetime.now().strftime("%d/%m/%Y %H:%M")
+            rpt = reporte_ht(info_act, stats, lecturas, history, ts)
+            _emitir(rpt)
             ht_done = True
 
         prev_period = periodo_actual
 
-        # ── Reporte FT ────────────────────────────────────────────────────────
-        if info_act["state"] == "post":
+        # Verificar FT en el ciclo principal
+        if _es_estado_final(info_act):
             ts  = datetime.now().strftime("%d/%m/%Y %H:%M")
-            rpt = reporte_ft(info_act, stats, lecturas, stats_ht, ts)
-            if RICH_AVAILABLE:
-                Console().clear()
-                Console().print(rpt)
-            else:
-                limpiar()
-                print(rpt)
+            rpt = reporte_ft(info_act, stats, lecturas, stats_ht, history, ts)
+            _emitir(rpt)
+            print(_mensaje_cierre(info_act))
             break
 
+        # Espera con monitoreo cada 30 segundos
         try:
-            time.sleep(INTERVALO_ACTUALIZACION)
+            motivo, info_q = _esperar_con_monitor(
+                INTERVALO_ACTUALIZACION, event_id, prev_period, ht_done
+            )
         except KeyboardInterrupt:
             print("\n\n  Detenido. ¡Hasta luego!")
+            break
+
+        if motivo == 'ht' and not ht_done:
+            stats, info_act = _fetch_full(event_id, league, evento, apif_fixture, apif_on)
+            lecturas = analisis_tactico(info_act, stats, history)
+            guardar_snapshot(history, info_act, stats)
+            stats_ht = {"home": dict(stats["home"]), "away": dict(stats["away"])}
+            ts  = datetime.now().strftime("%d/%m/%Y %H:%M")
+            rpt = reporte_ht(info_act, stats, lecturas, history, ts)
+            _emitir(rpt)
+            ht_done     = True
+            prev_period = info_act.get("period", 1)
+
+        elif motivo == 'ft':
+            stats, info_act = _fetch_full(event_id, league, evento, apif_fixture, apif_on)
+            lecturas = analisis_tactico(info_act, stats, history)
+            guardar_snapshot(history, info_act, stats)
+            ts  = datetime.now().strftime("%d/%m/%Y %H:%M")
+            rpt = reporte_ft(info_act, stats, lecturas, stats_ht, history, ts)
+            _emitir(rpt)
+            print(_mensaje_cierre(info_act))
             break
 
 
