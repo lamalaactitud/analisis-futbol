@@ -310,16 +310,20 @@ def apif_diagnostico():
     try:
         r = requests.get(f"{APIF_BASE}/status", headers=_apif_headers(), timeout=10)
         data = r.json()
-        if r.status_code == 401 or data.get("message") == "Error/Missing application key":
-            return ("API-Football: CLAVE INVÁLIDA. "
-                    "Ve a https://dashboard.api-football.com para obtener tu clave real "
-                    "(formato: cadena hex de 32 caracteres).")
+        errors = data.get("errors", {})
+        if r.status_code == 401 or errors:
+            return "API-Football: CLAVE INVÁLIDA — revisa en dashboard.api-football.com"
         if r.status_code != 200:
-            return f"API-Football: error HTTP {r.status_code} — {data}"
-        sub  = data.get("response", {}).get("subscription", {})
-        plan = sub.get("plan", {}).get("name", "desconocido")
-        reqs = data.get("response", {}).get("requests", {})
-        return f"API-Football OK — Plan: {plan} | Requests: {reqs}"
+            return f"API-Football: error HTTP {r.status_code}"
+        response = data.get("response", {})
+        if not isinstance(response, dict):
+            return "API-Football OK — conectado"
+        sub    = response.get("subscription", {})
+        plan   = sub.get("plan", "desconocido") if isinstance(sub, dict) else str(sub)
+        reqs   = response.get("requests", {})
+        usado  = reqs.get("current", "?") if isinstance(reqs, dict) else "?"
+        limite = reqs.get("limit_day", "?") if isinstance(reqs, dict) else "?"
+        return f"API-Football OK — Plan: {plan} | Requests hoy: {usado}/{limite}"
     except Exception as e:
         return f"API-Football: sin conexión — {e}"
 
