@@ -265,7 +265,7 @@ def espn_parse_event(ev):
     detail      = status.get("type", {}).get("shortDetail", "")
     period      = status.get("period", 1)
     status_name = status.get("type", {}).get("name", "")
-    is_ht       = ("HALF" in status_name.upper() or
+    is_ht       = (status_name.upper() in ("STATUS_HALFTIME", "STATUS_HALF_TIME") or
                    detail.upper() in ("HT", "HALF TIME", "HALFTIME"))
 
     if state == "post":   match_time = "FT"
