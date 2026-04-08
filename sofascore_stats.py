@@ -107,17 +107,33 @@ def _extraer_minuto(match_time):
     m = re.search(r'(\d+)', str(match_time))
     return int(m.group(1)) if m else None
 
-def _header_tiempo(match_time):
-    hora = datetime.now().strftime("%H:%M")
-    if match_time == "HT":
+def _header_tiempo(info):
+    hora       = datetime.now().strftime("%H:%M")
+    match_time = info.get("match_time", "") if isinstance(info, dict) else info
+    period     = info.get("period", 1)      if isinstance(info, dict) else 1
+    is_ht      = info.get("is_ht", False)   if isinstance(info, dict) else False
+    state      = info.get("state", "")      if isinstance(info, dict) else ""
+
+    if state == "post" or match_time == "FT":
+        return f"[{hora}  |  PARTIDO FINALIZADO]"
+    if is_ht or match_time == "HT":
         return f"[{hora}  |  MEDIO TIEMPO]"
-    elif match_time in ("FT", "AET", "AP"):
-        return f"[{hora}  |  FIN DEL PARTIDO]"
-    else:
-        minuto = _extraer_minuto(match_time)
-        if minuto:
-            return f"[{hora}  |  Min. {minuto}']"
-        return f"[{hora}  |  {match_time}]"
+    if match_time in ("AET",):
+        return f"[{hora}  |  TIEMPO EXTRA]"
+    if match_time in ("AP", "Penalties"):
+        return f"[{hora}  |  PENALES]"
+
+    minuto = _extraer_minuto(match_time)
+    min_str = f" - Min. {minuto}'" if minuto else ""
+    if period == 1:
+        return f"[{hora}  |  1er TIEMPO{min_str}]"
+    elif period == 2:
+        return f"[{hora}  |  2do TIEMPO{min_str}]"
+    elif period == 3:
+        return f"[{hora}  |  TIEMPO EXTRA{min_str}]"
+    elif period >= 4:
+        return f"[{hora}  |  PENALES]"
+    return f"[{hora}  |  {match_time}]"
 
 def _es_estado_final(info):
     state       = info.get("state", "")
@@ -287,14 +303,37 @@ def espn_parse_stats(summary):
 def _apif_headers():
     return {"x-apisports-key": API_FOOTBALL_KEY, "Accept": "application/json"}
 
+def apif_diagnostico():
+    """Prueba la clave y el plan de API-Football. Retorna string con resultado."""
+    if not API_FOOTBALL_KEY:
+        return "API-Football: clave vacía — desactivado."
+    try:
+        r = requests.get(f"{APIF_BASE}/status", headers=_apif_headers(), timeout=10)
+        data = r.json()
+        if r.status_code == 401 or data.get("message") == "Error/Missing application key":
+            return ("API-Football: CLAVE INVÁLIDA. "
+                    "Ve a https://dashboard.api-football.com para obtener tu clave real "
+                    "(formato: cadena hex de 32 caracteres).")
+        if r.status_code != 200:
+            return f"API-Football: error HTTP {r.status_code} — {data}"
+        sub  = data.get("response", {}).get("subscription", {})
+        plan = sub.get("plan", {}).get("name", "desconocido")
+        reqs = data.get("response", {}).get("requests", {})
+        return f"API-Football OK — Plan: {plan} | Requests: {reqs}"
+    except Exception as e:
+        return f"API-Football: sin conexión — {e}"
+
 def apif_find_fixture(home_name, away_name):
     if not API_FOOTBALL_KEY:
         return None
     try:
         r = requests.get(f"{APIF_BASE}/fixtures", params={"live": "all"},
                          headers=_apif_headers(), timeout=15)
-        r.raise_for_status()
-        fixtures = r.json().get("response", [])
+        data = r.json()
+        if r.status_code != 200 or data.get("errors"):
+            print(f"  [API-Football] Error en fixtures: {data.get('errors', r.status_code)}")
+            return None
+        fixtures = data.get("response", [])
         best_score, best = 0, None
         for fx in fixtures:
             t = fx.get("teams", {})
@@ -304,8 +343,12 @@ def apif_find_fixture(home_name, away_name):
                      (_sim(home_name, a_n) + _sim(away_name, h_n)) / 2)
             if sc > best_score:
                 best_score, best = sc, fx
-        return best if best_score >= 0.50 else None
-    except Exception:
+        if best_score < 0.50:
+            print(f"  [API-Football] Partido no encontrado (mejor coincidencia: {best_score:.0%})")
+            return None
+        return best
+    except Exception as e:
+        print(f"  [API-Football] Excepción en búsqueda: {e}")
         return None
 
 def apif_get_stats(fixture_id):
@@ -315,8 +358,10 @@ def apif_get_stats(fixture_id):
         r = requests.get(f"{APIF_BASE}/fixtures/statistics",
                          params={"fixture": fixture_id},
                          headers=_apif_headers(), timeout=15)
-        r.raise_for_status()
-        response = r.json().get("response", [])
+        data = r.json()
+        if r.status_code != 200 or data.get("errors"):
+            return {"home": {}, "away": {}}
+        response = data.get("response", [])
         out = {"home": {}, "away": {}}
         for i, team_data in enumerate(response[:2]):
             side = "home" if i == 0 else "away"
@@ -547,10 +592,62 @@ def analisis_tactico(info, stats, history=None):
                     tr.append("El nivel de faltas se incrementó significativamente en el tramo "
                               "final, señal de desgaste físico y mayor tensión táctica.")
 
-    lecturas["transiciones"] = " ".join(tr) if tr else \
-        "El perfil táctico de ambos equipos está por definirse con más datos."
+    lecturas["transiciones"] = " ".join(tr) if tr else ""
 
     return lecturas
+
+# ════════════════════════════════════════════════════════════════
+#  ALERTA DE DOMINIO
+# ════════════════════════════════════════════════════════════════
+
+def _alerta_dominio(info, stats):
+    """Genera 'DOMINA [EQUIPO] — razones' o 'EQUILIBRIO — datos'."""
+    h, a    = info["home_name"], info["away_name"]
+    hs, as_ = stats["home"], stats["away"]
+
+    pos_h = _n(hs.get("possessionPct")); pos_a = _n(as_.get("possessionPct"))
+    sot_h = _n(hs.get("shotsOnTarget")); sot_a = _n(as_.get("shotsOnTarget"))
+    sht_h = _n(hs.get("totalShots"));   sht_a = _n(as_.get("totalShots"))
+    cor_h = _n(hs.get("wonCorners"));   cor_a = _n(as_.get("wonCorners"))
+
+    pts_h, pts_a = 0, 0
+    raz_h, raz_a = [], []
+
+    if pos_h is not None and pos_a is not None:
+        if pos_h > pos_a + 5:
+            pts_h += 2; raz_h.append(f"posesión {pos_h:.0f}%")
+        elif pos_a > pos_h + 5:
+            pts_a += 2; raz_a.append(f"posesión {pos_a:.0f}%")
+
+    if sot_h is not None and sot_a is not None:
+        if sot_h > sot_a + 1:
+            pts_h += 3; raz_h.append(f"más tiros al arco ({sot_h:.0f} vs {sot_a:.0f})")
+        elif sot_a > sot_h + 1:
+            pts_a += 3; raz_a.append(f"más tiros al arco ({sot_a:.0f} vs {sot_h:.0f})")
+    elif sht_h is not None and sht_a is not None:
+        if sht_h > sht_a + 3:
+            pts_h += 2; raz_h.append(f"más remates ({sht_h:.0f} vs {sht_a:.0f})")
+        elif sht_a > sht_h + 3:
+            pts_a += 2; raz_a.append(f"más remates ({sht_a:.0f} vs {sht_h:.0f})")
+
+    if cor_h is not None and cor_a is not None:
+        if cor_h > cor_a + 1:
+            pts_h += 1; raz_h.append(f"más córners ({cor_h:.0f} vs {cor_a:.0f})")
+        elif cor_a > cor_h + 1:
+            pts_a += 1; raz_a.append(f"más córners ({cor_a:.0f} vs {cor_h:.0f})")
+
+    if pts_h > pts_a and raz_h:
+        return f"DOMINA {h.upper()} — " + ", ".join(raz_h)
+    if pts_a > pts_h and raz_a:
+        return f"DOMINA {a.upper()} — " + ", ".join(raz_a)
+    if pts_h > 0 or pts_a > 0:
+        datos = []
+        if pos_h is not None and pos_a is not None:
+            datos.append(f"posesión {pos_h:.0f}%–{pos_a:.0f}%")
+        if sot_h is not None and sot_a is not None:
+            datos.append(f"tiros al arco {sot_h:.0f}–{sot_a:.0f}")
+        return "EQUILIBRIO — " + ", ".join(datos) if datos else "EQUILIBRIO"
+    return ""  # Sin suficientes datos aún
 
 # ════════════════════════════════════════════════════════════════
 #  ANÁLISIS DE PORTEROS
@@ -592,12 +689,15 @@ def analisis_porteros(info, stats):
 SEP  = "─" * 62
 SEP2 = "═" * 62
 
+# Estadísticas mínimas que siempre se muestran aunque sean "—"
+BASE_STATS = {"possessionPct", "totalShots", "shotsOnTarget", "wonCorners", "foulsCommitted"}
+
 def _estadisticas_tabla(stats, h, a):
     lines = [f"  {'':26}  {h[:14]:>14}  {a[:14]:<14}", "  " + "─" * 56]
     for key, display in STATS_MAP.items():
         hv = stats["home"].get(key)
         av = stats["away"].get(key)
-        if hv is not None or av is not None:
+        if hv is not None or av is not None or key in BASE_STATS:
             lines.append(f"  {display:<26}  {str(hv or '—'):>14}  {str(av or '—'):<14}")
     return "\n".join(lines)
 
@@ -632,7 +732,7 @@ def reporte_ht(info, stats, lecturas, history, ts):
     ]
     for titulo, clave in secciones:
         texto = lecturas.get(clave, "")
-        if texto and "insuficientes" not in texto and "construcción" not in texto:
+        if texto:
             lines += [titulo, SEP, _wrap(texto), ""]
 
     evo_tabla = tabla_evolucion(history, h, a)
@@ -844,7 +944,7 @@ def mostrar_rich(info, stats, lecturas, num_act, apif_on):
     console = Console()
     console.clear()
     fuentes  = "ESPN" + (" + API-Football" if apif_on else "")
-    header_t = _header_tiempo(info["match_time"])
+    header_t = _header_tiempo(info)
 
     console.print(Panel(
         f"[bold cyan]{info['tournament']}[/bold cyan]  [dim]· {fuentes}[/dim]",
@@ -880,6 +980,12 @@ def mostrar_rich(info, stats, lecturas, num_act, apif_on):
         table.add_row("—", "[dim]Sin datos aún[/dim]", "—")
     console.print(table)
 
+    # Alerta de dominio
+    alerta = _alerta_dominio(info, stats)
+    if alerta:
+        color_alerta = "red" if "DOMINA" in alerta else "yellow"
+        console.print(f"\n[bold {color_alerta}]◆ {alerta}[/bold {color_alerta}]")
+
     colores = {"territorial": "yellow", "ofensiva": "green",
                "defensiva": "red", "transiciones": "cyan"}
     titulos = {"territorial": "CONTROL TERRITORIAL",
@@ -889,7 +995,7 @@ def mostrar_rich(info, stats, lecturas, num_act, apif_on):
 
     for clave, color in colores.items():
         texto = lecturas.get(clave, "")
-        if texto and "insuficientes" not in texto and "construcción" not in texto:
+        if texto:
             console.print(f"\n[bold {color}]▶ {titulos[clave]}[/bold {color}]")
             console.print(f"  [white]{texto}[/white]")
 
@@ -906,7 +1012,7 @@ def mostrar_plano(info, stats, lecturas, num_act, apif_on):
     limpiar()
     ancho    = 70
     fuentes  = "ESPN" + (" + API-Football" if apif_on else "")
-    header_t = _header_tiempo(info["match_time"])
+    header_t = _header_tiempo(info)
     print(SEP2)
     print(f"  {info['tournament'][:60]}")
     print(f"  Fuentes: {fuentes}")
@@ -923,13 +1029,18 @@ def mostrar_plano(info, stats, lecturas, num_act, apif_on):
         if hv is not None or av is not None:
             print(f"  {str(hv or '—'):^20}  {display:^22}  {str(av or '—'):^12}")
 
+    # Alerta de dominio
+    alerta = _alerta_dominio(info, stats)
+    if alerta:
+        print(f"\n{SEP}\n  ◆ {alerta}\n{SEP}")
+
     titulos = [("CONTROL TERRITORIAL",  "territorial"),
                ("EFICACIA OFENSIVA",    "ofensiva"),
                ("SOLIDEZ DEFENSIVA",    "defensiva"),
                ("TRANSICIONES Y RITMO", "transiciones")]
     for titulo, clave in titulos:
         texto = lecturas.get(clave, "")
-        if texto and "insuficientes" not in texto:
+        if texto:
             print(f"\n{SEP}\n  {titulo}\n{SEP}")
             print(_wrap(texto))
 
@@ -1083,28 +1194,40 @@ def main():
 
     apif_fixture = None
     if API_FOOTBALL_KEY:
-        print("Buscando en API-Football...")
-        apif_fixture = apif_find_fixture(info["home_name"], info["away_name"])
+        diag = apif_diagnostico()
         if RICH_AVAILABLE:
-            msg = ("[green]API-Football: partido encontrado.[/green]"
-                   if apif_fixture else
-                   "[yellow]API-Football: no encontrado. Usando solo ESPN.[/yellow]")
-            Console().print(msg + "\n")
+            color = "green" if "OK" in diag else "yellow"
+            Console().print(f"[{color}]{diag}[/{color}]")
         else:
-            print("API-Football:", "encontrado.\n" if apif_fixture else "no encontrado. Solo ESPN.\n")
+            print(f"  {diag}")
 
-    apif_on     = apif_fixture is not None
-    num_act     = 0
-    ht_done     = False
-    stats_ht    = None
-    history     = []
-    prev_period = 1
+        if "OK" in diag:
+            print("  Buscando partido en API-Football...")
+            apif_fixture = apif_find_fixture(info["home_name"], info["away_name"])
+            if RICH_AVAILABLE:
+                msg = ("[green]  API-Football: partido encontrado.[/green]"
+                       if apif_fixture else
+                       "[yellow]  API-Football: partido no encontrado. Usando solo ESPN.[/yellow]")
+                Console().print(msg + "\n")
+            else:
+                print("  API-Football:", "encontrado." if apif_fixture else "no encontrado. Solo ESPN.")
+
+    apif_on  = apif_fixture is not None
+    num_act  = 0
+    ht_done  = False
+    stats_ht = None
+    history  = []
 
     time.sleep(1)
 
+    # Primer fetch para inicializar el estado real del partido
+    stats, info_act = _fetch_full(event_id, league, evento, apif_fixture, apif_on)
+    prev_period = info_act.get("period", 1)  # Bug 1: partir del período real, no de 1 hardcodeado
+
     while True:
         num_act += 1
-        stats, info_act = _fetch_full(event_id, league, evento, apif_fixture, apif_on)
+        if num_act > 1:
+            stats, info_act = _fetch_full(event_id, league, evento, apif_fixture, apif_on)
         lecturas = analisis_tactico(info_act, stats, history)
         guardar_snapshot(history, info_act, stats)
 
