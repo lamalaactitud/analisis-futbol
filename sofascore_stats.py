@@ -29,7 +29,7 @@ except ImportError:
 INTERVALO_ACTUALIZACION = 300   # segundos entre actualizaciones completas
 INTERVALO_MONITOR       = 30    # segundos entre chequeos de estado
 
-API_FOOTBALL_KEY = "Lamalaactitud1986."
+API_FOOTBALL_KEY = "ad862569421ecfb58354dce03c811791"
 
 # ════════════════════════════════════════════════════════════════
 #  CONSTANTES
