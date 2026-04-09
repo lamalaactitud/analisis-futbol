@@ -687,6 +687,184 @@ def analisis_porteros(info, stats):
     return " ".join(partes)
 
 # ════════════════════════════════════════════════════════════════
+#  GRÁFICOS DE EVOLUCIÓN (matplotlib)
+# ════════════════════════════════════════════════════════════════
+
+def generar_graficos(history, info, ts):
+    """
+    Genera un PNG con 3 subgráficos de evolución del partido.
+    Retorna la ruta del archivo guardado, o None si falla.
+    """
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+    except ImportError:
+        try:
+            import subprocess
+            print("  Instalando matplotlib...")
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "matplotlib"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            import matplotlib
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+        except Exception as e:
+            print(f"  No se pudo instalar matplotlib: {e}")
+            return None
+
+    h, a   = info["home_name"], info["away_name"]
+    snaps  = [s for s in history if s["minuto"] is not None]
+    if len(snaps) < 2:
+        return None
+
+    minutos = [s["minuto"] for s in snaps]
+    C_H  = "#1565C0"   # azul oscuro local
+    C_A  = "#C62828"   # rojo oscuro visitante
+    C_H2 = "#90CAF9"   # azul claro (tiros al arco local)
+    C_A2 = "#EF9A9A"   # rojo claro (tiros al arco visitante)
+
+    fig, axes = plt.subplots(3, 1, figsize=(13, 17), facecolor="#FAFAFA")
+    fig.suptitle(f"{h}  vs  {a}\n{info.get('tournament', '')}  ·  {ts}",
+                 fontsize=13, fontweight="bold", y=0.99, color="#212121")
+
+    def _vals(key, side):
+        return [_n(s["stats"][side].get(key)) for s in snaps]
+
+    # ── GRÁFICO 1: POSESIÓN ──────────────────────────────────────
+    ax1 = axes[0]
+    ph = _vals("possessionPct", "home")
+    pa = _vals("possessionPct", "away")
+    valid1 = [(m, vh, va) for m, vh, va in zip(minutos, ph, pa)
+              if vh is not None and va is not None]
+    if valid1:
+        mins1, ph_v, pa_v = zip(*valid1)
+        ax1.fill_between(mins1, ph_v, alpha=0.30, color=C_H)
+        ax1.fill_between(mins1, pa_v, alpha=0.30, color=C_A)
+        ax1.plot(mins1, ph_v, color=C_H, lw=2.5, marker="o", ms=5, label=h)
+        ax1.plot(mins1, pa_v, color=C_A, lw=2.5, marker="o", ms=5, label=a)
+        ax1.axhline(50, color="gray", ls="--", alpha=0.4, lw=1)
+        ax1.set_ylim(0, 100)
+        ax1.set_ylabel("Posesión (%)", fontsize=10)
+        ax1.set_title("EVOLUCIÓN DE POSESIÓN", fontweight="bold", fontsize=11, pad=8)
+        ax1.set_xticks(mins1)
+        ax1.set_xticklabels([f"Min.{m}'" for m in mins1], fontsize=8)
+        ax1.legend(loc="upper right", fontsize=9)
+        ax1.grid(True, alpha=0.25)
+        # Interpretación
+        diff = ph_v[-1] - ph_v[0]
+        if diff > 6:
+            it1 = f"{h} fue creciendo en la posesión: {ph_v[0]:.0f}% → {ph_v[-1]:.0f}% al final."
+        elif diff < -6:
+            it1 = f"{a} tomó el control progresivamente: {pa_v[0]:.0f}% → {pa_v[-1]:.0f}%."
+        elif abs(ph_v[-1] - pa_v[-1]) <= 5:
+            it1 = f"Posesión equilibrada de principio a fin ({ph_v[-1]:.0f}% – {pa_v[-1]:.0f}%)."
+        else:
+            dom = h if ph_v[-1] > pa_v[-1] else a
+            it1 = f"{dom} mantuvo la pelota ({max(ph_v[-1], pa_v[-1]):.0f}%) a lo largo del partido."
+        ax1.text(0.5, -0.13, it1, transform=ax1.transAxes,
+                 ha="center", fontsize=9, style="italic", color="#424242")
+
+    # ── GRÁFICO 2: TIROS TOTALES VS AL ARCO ─────────────────────
+    ax2 = axes[1]
+    sht_h = _vals("totalShots",    "home")
+    sht_a = _vals("totalShots",    "away")
+    sot_h = _vals("shotsOnTarget", "home")
+    sot_a = _vals("shotsOnTarget", "away")
+    valid2 = [(m, sh, sa, oh, oa)
+              for m, sh, sa, oh, oa in zip(minutos, sht_h, sht_a, sot_h, sot_a)
+              if any(v is not None for v in [sh, sa, oh, oa])]
+    if valid2:
+        mins2, sh_v, sa_v, oh_v, oa_v = zip(*valid2)
+        x2 = list(range(len(mins2)))
+        w  = 0.2
+        def safe(lst): return [v if v is not None else 0 for v in lst]
+        ax2.bar([i - 1.5*w for i in x2], safe(sh_v), w, color=C_H,
+                label=f"{h} - Tiros totales", alpha=0.88)
+        ax2.bar([i - 0.5*w for i in x2], safe(oh_v), w, color=C_H2,
+                label=f"{h} - Al arco", alpha=0.88)
+        ax2.bar([i + 0.5*w for i in x2], safe(sa_v), w, color=C_A,
+                label=f"{a} - Tiros totales", alpha=0.88)
+        ax2.bar([i + 1.5*w for i in x2], safe(oa_v), w, color=C_A2,
+                label=f"{a} - Al arco", alpha=0.88)
+        ax2.set_xticks(x2)
+        ax2.set_xticklabels([f"Min.{m}'" for m in mins2], fontsize=8)
+        ax2.set_ylabel("Cantidad acumulada", fontsize=10)
+        ax2.set_title("TIROS TOTALES VS AL ARCO", fontweight="bold", fontsize=11, pad=8)
+        ax2.legend(loc="upper left", fontsize=8, ncol=2)
+        ax2.grid(True, alpha=0.25, axis="y")
+        # Interpretación
+        lsh = sh_v[-1] or 0; lsa = sa_v[-1] or 0
+        loh = oh_v[-1] or 0; loa = oa_v[-1] or 0
+        ef_h = (loh / lsh * 100) if lsh > 0 else 0
+        ef_a = (loa / lsa * 100) if lsa > 0 else 0
+        if ef_h > ef_a + 15:
+            it2 = f"{h} más eficaz: {ef_h:.0f}% de sus tiros al arco vs {ef_a:.0f}% de {a}."
+        elif ef_a > ef_h + 15:
+            it2 = f"{a} más eficaz: {ef_a:.0f}% de sus tiros al arco vs {ef_h:.0f}% de {h}."
+        else:
+            it2 = f"Eficacia similar en el disparo — {h}: {ef_h:.0f}%  |  {a}: {ef_a:.0f}% al arco."
+        ax2.text(0.5, -0.13, it2, transform=ax2.transAxes,
+                 ha="center", fontsize=9, style="italic", color="#424242")
+
+    # ── GRÁFICO 3: CÓRNERS Y FALTAS ──────────────────────────────
+    ax3 = axes[2]
+    cor_h  = _vals("wonCorners",    "home")
+    cor_a  = _vals("wonCorners",    "away")
+    foul_h = _vals("foulsCommitted","home")
+    foul_a = _vals("foulsCommitted","away")
+    valid3 = [(m, ch, ca, fh, fa)
+              for m, ch, ca, fh, fa in zip(minutos, cor_h, cor_a, foul_h, foul_a)
+              if any(v is not None for v in [ch, ca, fh, fa])]
+    if valid3:
+        mins3, ch_v, ca_v, fh_v, fa_v = zip(*valid3)
+        def sp(lst): return [v if v is not None else 0 for v in lst]
+        ax3.plot(mins3, sp(ch_v),  color=C_H, lw=2, marker="s", ms=5, ls="-",
+                 label=f"{h} - Córners")
+        ax3.plot(mins3, sp(ca_v),  color=C_A, lw=2, marker="s", ms=5, ls="-",
+                 label=f"{a} - Córners")
+        ax3.plot(mins3, sp(fh_v),  color=C_H, lw=2, marker="^", ms=5, ls="--",
+                 label=f"{h} - Faltas")
+        ax3.plot(mins3, sp(fa_v),  color=C_A, lw=2, marker="^", ms=5, ls="--",
+                 label=f"{a} - Faltas")
+        ax3.set_xticks(mins3)
+        ax3.set_xticklabels([f"Min.{m}'" for m in mins3], fontsize=8)
+        ax3.set_ylabel("Cantidad acumulada", fontsize=10)
+        ax3.set_title("CÓRNERS Y FALTAS ACUMULADAS", fontweight="bold", fontsize=11, pad=8)
+        ax3.legend(loc="upper left", fontsize=8, ncol=2)
+        ax3.grid(True, alpha=0.25)
+        # Interpretación
+        lch = ch_v[-1] or 0; lca = ca_v[-1] or 0
+        lfh = fh_v[-1] or 0; lfa = fa_v[-1] or 0
+        partes3 = []
+        if lch + lca > 0:
+            dom_c = h if lch >= lca else a
+            partes3.append(f"{dom_c} dominó en córners ({max(lch,lca):.0f} vs {min(lch,lca):.0f})")
+        if lfh + lfa > 0:
+            mas_f = h if lfh >= lfa else a
+            partes3.append(f"{mas_f} acumuló más faltas ({max(lfh,lfa):.0f} vs {min(lfh,lfa):.0f})")
+        it3 = ". ".join(partes3) + "." if partes3 else "Sin datos suficientes de córners y faltas."
+        ax3.text(0.5, -0.13, it3, transform=ax3.transAxes,
+                 ha="center", fontsize=9, style="italic", color="#424242")
+
+    # ── GUARDAR ──────────────────────────────────────────────────
+    fecha_str = datetime.now().strftime("%Y%m%d_%H%M")
+    h_safe    = re.sub(r"[^\w]", "_", h)[:15]
+    a_safe    = re.sub(r"[^\w]", "_", a)[:15]
+    desktop   = os.path.join(os.path.expanduser("~"), "Desktop")
+    nombre    = f"evolucion_{h_safe}_vs_{a_safe}_{fecha_str}.png"
+    ruta      = os.path.join(desktop, nombre)
+    try:
+        plt.tight_layout(rect=[0, 0, 1, 0.97])
+        plt.savefig(ruta, dpi=150, bbox_inches="tight", facecolor="#FAFAFA")
+        plt.close()
+        return ruta
+    except Exception as e:
+        plt.close()
+        print(f"  Error al guardar gráfico: {e}")
+        return None
+
+# ════════════════════════════════════════════════════════════════
 #  GENERADORES DE REPORTES
 # ════════════════════════════════════════════════════════════════
 
@@ -919,13 +1097,24 @@ def reporte_ft(info, stats, lecturas, stats_ht, history, ts):
     lines.append(_wrap(" ".join(inflexion)))
     lines.append("")
 
-    # 4. EVOLUCIÓN ESTADÍSTICA
-    evo_tabla = tabla_evolucion(history, h, a)
-    if evo_tabla:
-        lines += ["4. EVOLUCIÓN ESTADÍSTICA DEL PARTIDO", SEP, evo_tabla, ""]
-        evo_interp = _interpretar_evolucion(history, h, a)
-        if evo_interp:
-            lines += [_wrap(evo_interp), ""]
+    # 4. GRÁFICOS DE EVOLUCIÓN
+    lines += ["4. GRÁFICOS DE EVOLUCIÓN", SEP]
+    ruta_png = generar_graficos(history, info, ts)
+    if ruta_png:
+        lines += [
+            f"  Gráficos guardados en:",
+            f"  {ruta_png}",
+            "",
+            "  Contiene: evolución de posesión · tiros totales vs al arco · córners y faltas",
+        ]
+    else:
+        evo_tabla = tabla_evolucion(history, h, a)
+        if evo_tabla:
+            lines.append(evo_tabla)
+            evo_interp = _interpretar_evolucion(history, h, a)
+            if evo_interp:
+                lines += ["", _wrap(evo_interp)]
+    lines.append("")
 
     # 5. ANÁLISIS DE PORTEROS
     gk = analisis_porteros(info, stats)
