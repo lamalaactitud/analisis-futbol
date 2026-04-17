@@ -26,7 +26,7 @@ except ImportError:
 #  CONFIGURACIÓN — edita solo esta sección
 # ════════════════════════════════════════════════════════════════
 
-INTERVALO_ACTUALIZACION = 300   # segundos entre actualizaciones completas
+INTERVALO_ACTUALIZACION = 180   # segundos entre actualizaciones completas (3 min)
 INTERVALO_MONITOR       = 30    # segundos entre chequeos de estado
 
 API_FOOTBALL_KEY = "ad862569421ecfb58354dce03c811791"
@@ -273,6 +273,7 @@ def espn_parse_event(ev):
     elif is_ht:           match_time = "HT"
     else:                 match_time = clock or detail or "En vivo"
 
+    venue = comp.get("venue", {})
     return {
         "home_name":   home.get("team", {}).get("displayName", "Local"),
         "away_name":   away.get("team", {}).get("displayName", "Visitante"),
@@ -286,6 +287,10 @@ def espn_parse_event(ev):
         "tournament":  ev.get("name", "") or ev.get("season", {}).get("slug", ""),
         "event_id":    ev.get("id", ""),
         "league":      ev.get("league", {}).get("slug", "all"),
+        "estadio":     venue.get("fullName", ""),
+        "ciudad":      venue.get("address", {}).get("city", ""),
+        "arbitro":     "",   # se rellena desde espn_get_meta()
+        "asistencia":  comp.get("attendance", None),
     }
 
 def espn_parse_stats(summary):
@@ -295,6 +300,30 @@ def espn_parse_stats(summary):
         for s in team.get("statistics", []):
             stats[side][s.get("name", "")] = s.get("displayValue", s.get("value"))
     return stats
+
+def espn_get_meta(summary):
+    """Extrae árbitro, estadio (si no vino del evento) y asistencia desde el summary."""
+    meta = {"arbitro": "", "estadio_sum": "", "ciudad_sum": ""}
+    try:
+        header = summary.get("header", {})
+        comp   = (header.get("competitions") or [{}])[0]
+
+        # Árbitro
+        for oficial in comp.get("officials", []):
+            pos = oficial.get("position", {}).get("displayName", "").upper()
+            if "REFEREE" in pos or "ÁRBITRO" in pos or "ARBITRO" in pos or pos == "":
+                meta["arbitro"] = oficial.get("fullName", "")
+                break
+            if not meta["arbitro"]:
+                meta["arbitro"] = oficial.get("fullName", "")
+
+        # Estadio / ciudad (por si el evento no los trajo)
+        venue = comp.get("venue", {})
+        meta["estadio_sum"] = venue.get("fullName", "")
+        meta["ciudad_sum"]  = venue.get("address", {}).get("city", "")
+    except Exception:
+        pass
+    return meta
 
 # ════════════════════════════════════════════════════════════════
 #  FUENTE API-FOOTBALL
@@ -376,6 +405,98 @@ def apif_get_stats(fixture_id):
         return out
     except Exception:
         return {"home": {}, "away": {}}
+
+def apif_get_events(fixture_id):
+    """Obtiene eventos del partido (tarjetas, goles, sustituciones) desde API-Football."""
+    if not API_FOOTBALL_KEY or not fixture_id:
+        return []
+    try:
+        r = requests.get(f"{APIF_BASE}/fixtures/events",
+                         params={"fixture": fixture_id},
+                         headers=_apif_headers(), timeout=15)
+        data = r.json()
+        if r.status_code != 200 or data.get("errors"):
+            return []
+        return data.get("response", [])
+    except Exception:
+        return []
+
+def espn_get_events(summary, home_name, away_name):
+    """Extrae eventos del partido desde ESPN como fallback."""
+    eventos = []
+    try:
+        # ESPN guarda jugadas en summary → plays o keyEvents
+        plays = summary.get("plays") or summary.get("keyEvents") or []
+        comps = summary.get("header", {}).get("competitions", [{}])
+        comp  = comps[0] if comps else {}
+        comps2 = comp.get("competitors", [{}, {}])
+        home_id = next((c.get("id","") for c in comps2 if c.get("homeAway")=="home"), "")
+        away_id = next((c.get("id","") for c in comps2 if c.get("homeAway")=="away"), "")
+
+        for play in plays:
+            tipo_raw = play.get("type", {}).get("text", "").lower()
+            team_id  = play.get("team", {}).get("id", "")
+            equipo   = home_name if str(team_id) == str(home_id) else away_name
+            minuto   = None
+            clock    = play.get("clock", {}).get("displayValue", "")
+            if clock:
+                m = re.search(r"(\d+)", clock)
+                minuto = int(m.group(1)) if m else None
+            jugador  = ""
+            parts    = play.get("participants", [])
+            if parts:
+                jugador = parts[0].get("athlete", {}).get("displayName", "")
+
+            if "yellow" in tipo_raw or "amarilla" in tipo_raw:
+                eventos.append({"tipo":"tarjeta","detalle":"amarilla",
+                                 "minuto":minuto,"extra":None,
+                                 "equipo":equipo,"jugador":jugador,"fuente":"espn"})
+            elif "red" in tipo_raw or "roja" in tipo_raw:
+                eventos.append({"tipo":"tarjeta","detalle":"roja",
+                                 "minuto":minuto,"extra":None,
+                                 "equipo":equipo,"jugador":jugador,"fuente":"espn"})
+            elif "substitut" in tipo_raw or "cambio" in tipo_raw:
+                sale   = jugador
+                entra  = parts[1].get("athlete",{}).get("displayName","") if len(parts)>1 else ""
+                eventos.append({"tipo":"sustitucion","detalle":"",
+                                 "minuto":minuto,"extra":None,
+                                 "equipo":equipo,"jugador":sale,"asistencia":entra,"fuente":"espn"})
+    except Exception:
+        pass
+    return eventos
+
+def _normalizar_eventos_apif(raw, home_name, away_name):
+    """Convierte la respuesta de API-Football al formato unificado."""
+    eventos = []
+    for ev in raw:
+        minuto = ev.get("time", {}).get("elapsed")
+        extra  = ev.get("time", {}).get("extra")
+        team   = ev.get("team", {}).get("name", "")
+        equipo = home_name if _sim(team, home_name) > _sim(team, away_name) else away_name
+        jugador   = ev.get("player", {}).get("name", "") or ""
+        asistencia= ev.get("assist",  {}).get("name", "") or ""
+        tipo_raw  = ev.get("type",   "").lower()
+        detalle   = ev.get("detail", "").lower()
+
+        if tipo_raw == "card":
+            if "yellow red" in detalle or "second yellow" in detalle:
+                det = "doble_amarilla"
+            elif "red" in detalle:
+                det = "roja"
+            else:
+                det = "amarilla"
+            eventos.append({"tipo":"tarjeta","detalle":det,"minuto":minuto,
+                             "extra":extra,"equipo":equipo,"jugador":jugador,
+                             "asistencia":"","fuente":"apif"})
+        elif tipo_raw == "subst":
+            eventos.append({"tipo":"sustitucion","detalle":"","minuto":minuto,
+                             "extra":extra,"equipo":equipo,"jugador":jugador,
+                             "asistencia":asistencia,"fuente":"apif"})
+        elif tipo_raw == "goal":
+            eventos.append({"tipo":"gol","detalle":detalle,"minuto":minuto,
+                             "extra":extra,"equipo":equipo,"jugador":jugador,
+                             "asistencia":asistencia,"fuente":"apif"})
+    return sorted(eventos, key=lambda e: (e.get("minuto") or 0))
 
 def merge_stats(espn, apif):
     merged = {"home": dict(espn.get("home", {})), "away": dict(espn.get("away", {}))}
@@ -687,6 +808,185 @@ def analisis_porteros(info, stats):
     return " ".join(partes)
 
 # ════════════════════════════════════════════════════════════════
+#  MÓDULO ARBITRAL
+# ════════════════════════════════════════════════════════════════
+
+_ICONO = {"amarilla": "🟡", "doble_amarilla": "🟡🔴", "roja": "🔴",
+          "gol": "⚽", "sustitucion": "🔄"}
+_LABEL = {"amarilla": "Amarilla", "doble_amarilla": "2ª Amarilla → Roja",
+          "roja": "Roja directa", "gol": "Gol", "sustitucion": "Cambio"}
+
+def analisis_arbitral(info, stats, eventos):
+    """
+    Genera texto estructurado del módulo arbitral para mostrar en cada actualización.
+    Retorna dict con secciones: tarjetas, sustituciones, faltas, interpretacion.
+    """
+    h, a    = info["home_name"], info["away_name"]
+    hs, as_ = stats["home"], stats["away"]
+    foul_h  = _n(hs.get("foulsCommitted"))
+    foul_a  = _n(as_.get("foulsCommitted"))
+    yc_h    = _n(hs.get("yellowCards"))
+    yc_a    = _n(as_.get("yellowCards"))
+    rc_h    = _n(hs.get("redCards"))
+    rc_a    = _n(as_.get("redCards"))
+
+    tarjetas     = [e for e in eventos if e["tipo"] == "tarjeta"]
+    sustituciones= [e for e in eventos if e["tipo"] == "sustitucion"]
+
+    out = {}
+
+    # ── TARJETAS ──────────────────────────────────────────────────
+    if tarjetas:
+        lineas = []
+        for t in tarjetas:
+            min_str = f"Min.{t['minuto']}" if t.get("minuto") else "—"
+            if t.get("extra"):
+                min_str += f"+{t['extra']}"
+            icono = _ICONO.get(t["detalle"], "🟡")
+            label = _LABEL.get(t["detalle"], t["detalle"])
+            jugador = t.get("jugador", "") or "Jugador desconocido"
+            lineas.append(f"  {min_str:>8}  {icono} {label:<22}  {t['equipo']:<20}  {jugador}")
+        out["tarjetas"] = "\n".join(lineas)
+    else:
+        out["tarjetas"] = "  Sin tarjetas hasta el momento."
+
+    # ── SUSTITUCIONES ─────────────────────────────────────────────
+    if sustituciones:
+        lineas = []
+        for s in sustituciones:
+            min_str = f"Min.{s['minuto']}" if s.get("minuto") else "—"
+            sale  = s.get("jugador", "—") or "—"
+            entra = s.get("asistencia", "—") or "—"
+            lineas.append(f"  {min_str:>8}  🔄 {s['equipo']:<20}  Sale: {sale:<20} Entra: {entra}")
+        out["sustituciones"] = "\n".join(lineas)
+    else:
+        out["sustituciones"] = "  Sin sustituciones registradas."
+
+    # ── FALTAS ────────────────────────────────────────────────────
+    faltas_lineas = []
+    if foul_h is not None:
+        faltas_lineas.append(f"  {h:<24}  {foul_h:.0f} faltas")
+    if foul_a is not None:
+        faltas_lineas.append(f"  {a:<24}  {foul_a:.0f} faltas")
+    out["faltas"] = "\n".join(faltas_lineas) if faltas_lineas else "  Sin datos de faltas."
+
+    # ── INTERPRETACIÓN ARBITRAL ───────────────────────────────────
+    interp = []
+    tot_tarj = len(tarjetas)
+    tot_f    = (foul_h or 0) + (foul_a or 0)
+    minuto   = _extraer_minuto(info.get("match_time", "")) or 45
+
+    if tot_tarj == 0 and tot_f > 20:
+        interp.append("Partido físico con criterio permisivo: muchas faltas sin tarjeta. "
+                       "El árbitro está dejando jugar y tolerando el contacto.")
+    elif tot_tarj >= 1 and minuto <= 20:
+        interp.append("Árbitro de mano dura desde el inicio: tarjeta temprana que puede "
+                       "condicionar el juego físico del resto del partido.")
+    elif tot_tarj >= 4:
+        interp.append(f"Partido caliente: {tot_tarj} tarjetas muestran un encuentro "
+                       "donde el árbitro está perdiendo autoridad o el juego se tornó muy disputado.")
+    elif tot_f <= 12 and tot_tarj == 0:
+        interp.append("Partido limpio y fluido: pocas faltas y ninguna tarjeta. "
+                       "El árbitro permite el juego sin necesidad de intervenir.")
+
+    # Asimetría de faltas
+    if foul_h is not None and foul_a is not None and abs(foul_h - foul_a) >= 6:
+        mas = h if foul_h > foul_a else a
+        menos = a if foul_h > foul_a else h
+        interp.append(f"{mas} concentra la mayoría de las faltas ({max(foul_h, foul_a):.0f} vs "
+                       f"{min(foul_h, foul_a):.0f} de {menos}): patrón de falta estratégica "
+                       "para frenar las transiciones rivales.")
+
+    # Tarjetas rojas
+    if (rc_h or 0) + (rc_a or 0) >= 1:
+        interp.append("La expulsión cambia el libreto táctico del partido. "
+                       "El equipo con inferioridad numérica debe replantear su esquema.")
+
+    out["interpretacion"] = " ".join(interp) if interp else \
+        "Sin patrones arbitrales relevantes identificados hasta el momento."
+
+    return out
+
+
+def _seccion_arbitral_reporte(eventos, info, stats):
+    """Genera el bloque de texto de resumen arbitral para reportes HT/FT."""
+    h, a = info["home_name"], info["away_name"]
+    hs, as_ = stats["home"], stats["away"]
+    foul_h = _n(hs.get("foulsCommitted"))
+    foul_a = _n(as_.get("foulsCommitted"))
+
+    tarjetas      = [e for e in eventos if e["tipo"] == "tarjeta"]
+    sustituciones = [e for e in eventos if e["tipo"] == "sustitucion"]
+
+    lineas = []
+
+    # Tarjetas por equipo
+    t_h = [t for t in tarjetas if t["equipo"] == h]
+    t_a = [t for t in tarjetas if t["equipo"] == a]
+    am_h = sum(1 for t in t_h if t["detalle"] == "amarilla")
+    am_a = sum(1 for t in t_a if t["detalle"] == "amarilla")
+    ro_h = sum(1 for t in t_h if t["detalle"] in ("roja","doble_amarilla"))
+    ro_a = sum(1 for t in t_a if t["detalle"] in ("roja","doble_amarilla"))
+
+    lineas.append(f"  Tarjetas amarillas — {h}: {am_h}  |  {a}: {am_a}")
+    if ro_h + ro_a > 0:
+        lineas.append(f"  Tarjetas rojas     — {h}: {ro_h}  |  {a}: {ro_a}")
+
+    # Detalle de tarjetas
+    if tarjetas:
+        lineas.append("")
+        lineas.append("  Detalle cronológico:")
+        for t in tarjetas:
+            min_str = f"Min.{t['minuto']}" if t.get("minuto") else "—"
+            label   = _LABEL.get(t["detalle"], t["detalle"])
+            jugador = t.get("jugador", "") or "—"
+            lineas.append(f"    {min_str}  {label}  {t['equipo']}  ({jugador})")
+
+    # Faltas
+    lineas.append("")
+    if foul_h is not None:
+        lineas.append(f"  Faltas cometidas — {h}: {foul_h:.0f}  |  {a}: {foul_a or '—'}")
+
+    # Momento de mayor tensión
+    if tarjetas:
+        max_min = max((t["minuto"] or 0) for t in tarjetas)
+        cluster = [t for t in tarjetas if abs((t["minuto"] or 0) - max_min) <= 5]
+        if len(cluster) >= 2:
+            lineas.append(f"\n  Mayor tensión: {len(cluster)} tarjetas en torno al minuto {max_min}.")
+
+    # Sustituciones
+    if sustituciones:
+        lineas.append("")
+        lineas.append("  Sustituciones:")
+        for s in sustituciones:
+            min_str = f"Min.{s['minuto']}" if s.get("minuto") else "—"
+            sale  = s.get("jugador","—") or "—"
+            entra = s.get("asistencia","—") or "—"
+            lineas.append(f"    {min_str}  {s['equipo']}  Sale: {sale} → Entra: {entra}")
+
+    # Lectura interpretativa
+    tot_tarj = len(tarjetas)
+    tot_f    = (foul_h or 0) + (foul_a or 0)
+    interp = []
+    if tot_tarj == 0 and tot_f > 25:
+        interp.append("El árbitro permitió un juego físico intenso sin recurrir a la tarjeta: "
+                       "criterio permisivo que favoreció la intensidad.")
+    elif tot_tarj >= 4:
+        interp.append(f"Con {tot_tarj} tarjetas, el árbitro tuvo que intervenir con frecuencia. "
+                       "El partido estuvo al límite de la corrección táctica.")
+    elif ro_h + ro_a >= 1:
+        interp.append("La expulsión fue el momento bisagra del partido desde lo disciplinario. "
+                       "Condicionó los últimos minutos del encuentro.")
+    elif tot_tarj == 0 and tot_f <= 15:
+        interp.append("Partido limpio: el árbitro tuvo un rol discreto, sin necesidad "
+                       "de intervenir con tarjetas. El juego se mantuvo ordenado.")
+    if interp:
+        lineas.append("")
+        lineas += [_wrap(interp[0])]
+
+    return "\n".join(lineas)
+
+# ════════════════════════════════════════════════════════════════
 #  GRÁFICOS DE EVOLUCIÓN (matplotlib)
 # ════════════════════════════════════════════════════════════════
 
@@ -883,7 +1183,7 @@ def _estadisticas_tabla(stats, h, a):
             lines.append(f"  {display:<26}  {str(hv or '—'):>14}  {str(av or '—'):<14}")
     return "\n".join(lines)
 
-def reporte_ht(info, stats, lecturas, history, ts):
+def reporte_ht(info, stats, lecturas, history, ts, eventos=None):
     h, a = info["home_name"], info["away_name"]
     marcador = f"{h} {info['home_score']} – {info['away_score']} {a}"
 
@@ -927,6 +1227,11 @@ def reporte_ht(info, stats, lecturas, history, ts):
     lines += ["ESTADÍSTICAS DEL PRIMER TIEMPO", SEP,
               _estadisticas_tabla(stats, h, a), ""]
 
+    # Sección arbitral HT
+    if eventos:
+        sec_arb = _seccion_arbitral_reporte(eventos, info, stats)
+        lines += ["RESUMEN ARBITRAL — PRIMERA MITAD", SEP, sec_arb, ""]
+
     lines += ["PROYECCIÓN PARA EL SEGUNDO TIEMPO", SEP]
     if gh is not None and ga is not None:
         if gh < ga:
@@ -943,7 +1248,7 @@ def reporte_ht(info, stats, lecturas, history, ts):
     return "\n".join(lines)
 
 
-def reporte_ft(info, stats, lecturas, stats_ht, history, ts):
+def reporte_ft(info, stats, lecturas, stats_ht, history, ts, eventos=None):
     h, a   = info["home_name"], info["away_name"]
     marcador = f"{h} {info['home_score']} – {info['away_score']} {a}"
     gh, ga = _n(info["home_score"]), _n(info["away_score"])
@@ -1116,13 +1421,18 @@ def reporte_ft(info, stats, lecturas, stats_ht, history, ts):
                 lines += ["", _wrap(evo_interp)]
     lines.append("")
 
-    # 5. ANÁLISIS DE PORTEROS
+    # 5. RESUMEN ARBITRAL COMPLETO
+    if eventos:
+        sec_arb = _seccion_arbitral_reporte(eventos, info, stats)
+        lines += ["5. RESUMEN ARBITRAL DEL PARTIDO", SEP, sec_arb, ""]
+
+    # 6. ANÁLISIS DE PORTEROS
     gk = analisis_porteros(info, stats)
     if gk:
-        lines += ["5. ANÁLISIS DE PORTEROS", SEP, _wrap(gk), ""]
+        lines += ["6. ANÁLISIS DE PORTEROS", SEP, _wrap(gk), ""]
 
-    # 6. CUADRO ESTADÍSTICO FINAL
-    lines += ["6. CUADRO ESTADÍSTICO FINAL", SEP,
+    # 7. CUADRO ESTADÍSTICO FINAL
+    lines += ["7. CUADRO ESTADÍSTICO FINAL", SEP,
               _estadisticas_tabla(stats, h, a), ""]
 
     fuentes = "ESPN API" + (" + API-Football" if API_FOOTBALL_KEY else "")
@@ -1133,15 +1443,30 @@ def reporte_ft(info, stats, lecturas, stats_ht, history, ts):
 #  VISUALIZACIÓN
 # ════════════════════════════════════════════════════════════════
 
-def mostrar_rich(info, stats, lecturas, num_act, apif_on):
+def mostrar_rich(info, stats, lecturas, num_act, apif_on, eventos=None):
     console = Console()
     console.clear()
     fuentes  = "ESPN" + (" + API-Football" if apif_on else "")
     header_t = _header_tiempo(info)
+    if eventos is None:
+        eventos = []
 
-    console.print(Panel(
-        f"[bold cyan]{info['tournament']}[/bold cyan]  [dim]· {fuentes}[/dim]",
-        style="dim"))
+    # Línea de meta (estadio / árbitro)
+    meta_parts = []
+    estadio = info.get("estadio") or info.get("estadio_sum", "")
+    ciudad  = info.get("ciudad")  or info.get("ciudad_sum",  "")
+    if estadio:
+        meta_parts.append(f"📍 {estadio}" + (f", {ciudad}" if ciudad else ""))
+    if info.get("arbitro"):
+        meta_parts.append(f"🧑‍⚖️ {info['arbitro']}")
+    if info.get("asistencia"):
+        meta_parts.append(f"👥 {info['asistencia']:,}")
+    meta_str = "  ·  ".join(meta_parts) if meta_parts else ""
+
+    torneo_line = f"[bold cyan]{info['tournament']}[/bold cyan]"
+    if meta_str:
+        torneo_line += f"\n[dim]{meta_str}[/dim]"
+    console.print(Panel(torneo_line + f"  [dim]· {fuentes}[/dim]", style="dim"))
 
     console.print(Panel(
         f"[bold white]{info['home_name']}[/bold white]  "
@@ -1192,6 +1517,16 @@ def mostrar_rich(info, stats, lecturas, num_act, apif_on):
             console.print(f"\n[bold {color}]▶ {titulos[clave]}[/bold {color}]")
             console.print(f"  [white]{texto}[/white]")
 
+    # Módulo arbitral
+    if eventos:
+        arb = analisis_arbitral(info, stats, eventos)
+        console.print(f"\n[bold magenta]▶ ANÁLISIS ARBITRAL[/bold magenta]")
+        console.print(f"[dim]  Tarjetas[/dim]\n{arb['tarjetas']}")
+        if any(e["tipo"] == "sustitucion" for e in eventos):
+            console.print(f"[dim]  Sustituciones[/dim]\n{arb['sustituciones']}")
+        console.print(f"[dim]  Faltas[/dim]\n{arb['faltas']}")
+        console.print(f"[dim]  Lectura[/dim]  [italic]{arb['interpretacion']}[/italic]")
+
     console.print(f"\n[dim]Actualizado: {datetime.now().strftime('%H:%M:%S')}  ·  "
                   f"#{num_act}  ·  Próxima en {INTERVALO_ACTUALIZACION//60} min  ·  "
                   "Ctrl+C para salir[/dim]")
@@ -1201,13 +1536,22 @@ def limpiar():
     os.system("cls" if os.name == "nt" else "clear")
 
 
-def mostrar_plano(info, stats, lecturas, num_act, apif_on):
+def mostrar_plano(info, stats, lecturas, num_act, apif_on, eventos=None):
     limpiar()
     ancho    = 70
     fuentes  = "ESPN" + (" + API-Football" if apif_on else "")
     header_t = _header_tiempo(info)
+    if eventos is None:
+        eventos = []
+
     print(SEP2)
     print(f"  {info['tournament'][:60]}")
+    estadio = info.get("estadio") or info.get("estadio_sum","")
+    ciudad  = info.get("ciudad")  or info.get("ciudad_sum","")
+    if estadio:
+        print(f"  {estadio}" + (f", {ciudad}" if ciudad else ""))
+    if info.get("arbitro"):
+        print(f"  Árbitro: {info['arbitro']}")
     print(f"  Fuentes: {fuentes}")
     print(SEP2)
     marcador = (f"{info['home_name']}  {info['home_score']} – "
@@ -1236,6 +1580,17 @@ def mostrar_plano(info, stats, lecturas, num_act, apif_on):
         if texto:
             print(f"\n{SEP}\n  {titulo}\n{SEP}")
             print(_wrap(texto))
+
+    # Módulo arbitral
+    if eventos:
+        arb = analisis_arbitral(info, stats, eventos)
+        print(f"\n{SEP}\n  ANÁLISIS ARBITRAL\n{SEP}")
+        print(f"  -- Tarjetas --\n{arb['tarjetas']}")
+        if any(e["tipo"] == "sustitucion" for e in eventos):
+            print(f"  -- Sustituciones --\n{arb['sustituciones']}")
+        print(f"  -- Faltas --\n{arb['faltas']}")
+        print(f"  -- Lectura --")
+        print(_wrap(arb['interpretacion']))
 
     print(f"\n{SEP}")
     print(f"  {datetime.now().strftime('%H:%M:%S')}  |  Update #{num_act}  |  Ctrl+C = salir")
@@ -1342,6 +1697,7 @@ def _fetch_full(event_id, league, evento, apif_fixture, apif_on):
     sum_espn = espn_summary(event_id, league)
     st_espn  = espn_parse_stats(sum_espn)
     st_apif  = {"home": {}, "away": {}}
+    fid      = None
     if apif_on and apif_fixture:
         fid     = apif_fixture.get("fixture", {}).get("id")
         st_apif = apif_get_stats(fid)
@@ -1350,7 +1706,25 @@ def _fetch_full(event_id, league, evento, apif_fixture, apif_on):
     todos    = _espn_all_events()
     ev_act   = next((e for e in todos if str(e.get("id", "")) == str(event_id)), evento)
     info_act = espn_parse_event(ev_act)
-    return stats, info_act
+
+    # Meta: árbitro y estadio desde summary (más completo que el evento)
+    meta = espn_get_meta(sum_espn)
+    if meta["arbitro"]:
+        info_act["arbitro"] = meta["arbitro"]
+    if not info_act.get("estadio") and meta["estadio_sum"]:
+        info_act["estadio"] = meta["estadio_sum"]
+        info_act["ciudad"]  = meta["ciudad_sum"]
+
+    # Eventos arbitrales: API-Football primero, ESPN como fallback
+    eventos = []
+    if fid:
+        raw = apif_get_events(fid)
+        if raw:
+            eventos = _normalizar_eventos_apif(raw, info_act["home_name"], info_act["away_name"])
+    if not eventos:
+        eventos = espn_get_events(sum_espn, info_act["home_name"], info_act["away_name"])
+
+    return stats, info_act, eventos
 
 def _emitir(texto):
     if RICH_AVAILABLE:
@@ -1414,29 +1788,30 @@ def main():
     time.sleep(1)
 
     # Primer fetch para inicializar el estado real del partido
-    stats, info_act = _fetch_full(event_id, league, evento, apif_fixture, apif_on)
-    prev_period = info_act.get("period", 1)  # Bug 1: partir del período real, no de 1 hardcodeado
+    stats, info_act, eventos = _fetch_full(event_id, league, evento, apif_fixture, apif_on)
+    prev_period = info_act.get("period", 1)
 
     while True:
         num_act += 1
         if num_act > 1:
-            stats, info_act = _fetch_full(event_id, league, evento, apif_fixture, apif_on)
+            stats, info_act, eventos = _fetch_full(event_id, league, evento, apif_fixture, apif_on)
         lecturas = analisis_tactico(info_act, stats, history)
         guardar_snapshot(history, info_act, stats)
 
         if RICH_AVAILABLE:
-            mostrar_rich(info_act, stats, lecturas, num_act, apif_on)
+            mostrar_rich(info_act, stats, lecturas, num_act, apif_on, eventos)
         else:
-            mostrar_plano(info_act, stats, lecturas, num_act, apif_on)
+            mostrar_plano(info_act, stats, lecturas, num_act, apif_on, eventos)
 
         # Verificar HT en el ciclo principal
         periodo_actual = info_act.get("period", 1)
         es_ht = info_act.get("is_ht", False) or (periodo_actual >= 2 and prev_period < 2)
 
         if not ht_done and es_ht:
-            stats_ht = {"home": dict(stats["home"]), "away": dict(stats["away"])}
+            stats_ht      = {"home": dict(stats["home"]), "away": dict(stats["away"])}
+            eventos_ht    = list(eventos)
             ts  = datetime.now().strftime("%d/%m/%Y %H:%M")
-            rpt = reporte_ht(info_act, stats, lecturas, history, ts)
+            rpt = reporte_ht(info_act, stats, lecturas, history, ts, eventos_ht)
             _emitir(rpt)
             ht_done = True
 
@@ -1445,7 +1820,7 @@ def main():
         # Verificar FT en el ciclo principal
         if _es_estado_final(info_act):
             ts  = datetime.now().strftime("%d/%m/%Y %H:%M")
-            rpt = reporte_ft(info_act, stats, lecturas, stats_ht, history, ts)
+            rpt = reporte_ft(info_act, stats, lecturas, stats_ht, history, ts, eventos)
             _emitir(rpt)
             print(_mensaje_cierre(info_act))
             break
@@ -1460,22 +1835,23 @@ def main():
             break
 
         if motivo == 'ht' and not ht_done:
-            stats, info_act = _fetch_full(event_id, league, evento, apif_fixture, apif_on)
+            stats, info_act, eventos = _fetch_full(event_id, league, evento, apif_fixture, apif_on)
             lecturas = analisis_tactico(info_act, stats, history)
             guardar_snapshot(history, info_act, stats)
-            stats_ht = {"home": dict(stats["home"]), "away": dict(stats["away"])}
+            stats_ht   = {"home": dict(stats["home"]), "away": dict(stats["away"])}
+            eventos_ht = list(eventos)
             ts  = datetime.now().strftime("%d/%m/%Y %H:%M")
-            rpt = reporte_ht(info_act, stats, lecturas, history, ts)
+            rpt = reporte_ht(info_act, stats, lecturas, history, ts, eventos_ht)
             _emitir(rpt)
             ht_done     = True
             prev_period = info_act.get("period", 1)
 
         elif motivo == 'ft':
-            stats, info_act = _fetch_full(event_id, league, evento, apif_fixture, apif_on)
+            stats, info_act, eventos = _fetch_full(event_id, league, evento, apif_fixture, apif_on)
             lecturas = analisis_tactico(info_act, stats, history)
             guardar_snapshot(history, info_act, stats)
             ts  = datetime.now().strftime("%d/%m/%Y %H:%M")
-            rpt = reporte_ft(info_act, stats, lecturas, stats_ht, history, ts)
+            rpt = reporte_ft(info_act, stats, lecturas, stats_ht, history, ts, eventos)
             _emitir(rpt)
             print(_mensaje_cierre(info_act))
             break
