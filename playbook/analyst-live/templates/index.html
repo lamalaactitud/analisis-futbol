@@ -343,55 +343,70 @@
     .event-desc { flex: 1; }
     .event-team { color: var(--text2); font-size: 11px; }
 
-    /* ── HT/FT Report modal ─────────────────────────────────────── */
-    #report-overlay {
+    /* ── Informe inline (HT / FT) ─────────────────────────────────── */
+    #report-bar {
       display: none;
-      position: fixed;
-      inset: 0;
-      background: rgba(0,0,0,.85);
-      z-index: 200;
       align-items: center;
-      justify-content: center;
-      padding: 20px;
-    }
-    #report-overlay.visible { display: flex; }
-    #report-box {
+      gap: 10px;
+      padding: 10px 16px;
       background: var(--bg2);
       border: 1px solid var(--border);
       border-radius: var(--radius);
-      max-width: 680px;
-      width: 100%;
-      max-height: 85vh;
-      display: flex;
-      flex-direction: column;
+      margin-bottom: 12px;
     }
-    #report-header {
-      padding: 14px 18px;
-      border-bottom: 1px solid var(--border);
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
+    #report-bar.visible { display: flex; }
+    #report-bar-label {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 1px;
     }
-    #report-tipo {
-      font-size: 13px;
-      font-weight: 800;
-      letter-spacing: 2px;
-      text-transform: uppercase;
-    }
-    #report-tipo.ht { color: var(--home); }
-    #report-tipo.ft { color: var(--accent); }
-    #report-body {
-      padding: 18px;
+    #report-bar-label.ht { color: var(--home); }
+    #report-bar-label.ft { color: var(--accent); }
+    #report-panel {
+      display: none;
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      margin-bottom: 16px;
+      max-height: 420px;
       overflow-y: auto;
-      flex: 1;
     }
+    #report-panel.open { display: block; }
     #report-text {
       font-family: "Courier New", monospace;
       font-size: 12px;
       line-height: 1.7;
       white-space: pre-wrap;
       color: var(--text);
+      padding: 18px;
     }
+    #report-text strong { font-weight: 900; color: var(--text); }
+
+    /* ── Fuentes activas ────────────────────────────────────────── */
+    #fuentes-activas {
+      font-size: 11px;
+      color: var(--text2);
+      margin-top: 6px;
+      display: none;
+    }
+    .fuente-ok  { color: #22c55e; font-weight: 600; }
+    .fuente-off { color: #ef4444; }
+
+    /* ── Goles en encabezado ─────────────────────────────────────── */
+    #goals-list {
+      margin-top: 10px;
+      display: none;
+    }
+    .goal-item {
+      font-size: 12px;
+      color: var(--text2);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 2px 0;
+    }
+    .goal-item .goal-player { color: var(--text); font-weight: 600; }
 
     /* ── Status bar ─────────────────────────────────────────────── */
     #status-bar {
@@ -508,6 +523,8 @@
       <span id="meta-estadio"></span>
       <span id="meta-arbitro"></span>
     </div>
+    <div id="goals-list"></div>
+    <div id="fuentes-activas"></div>
     <div id="proxima-update"></div>
   </div>
 
@@ -553,7 +570,7 @@
 
       <!-- Módulo arbitral -->
       <div class="panel" id="arbitral-panel" style="display:none">
-        <div class="panel-title">Módulo Arbitral</div>
+        <div class="panel-title">Análisis Arbitral</div>
         <div id="eventos-timeline"></div>
         <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px">
           <div id="arbitral-lectura" class="analysis-text" style="font-style:italic;color:var(--text2)"></div>
@@ -563,28 +580,26 @@
     </div>
   </div>
 
+  <!-- ═══ INFORME INLINE HT / FT ════════════════════════════════════ -->
+  <!-- Barra de aviso + botón toggle -->
+  <div id="report-bar">
+    <div id="report-bar-label">INFORME DISPONIBLE</div>
+    <div style="flex:1"></div>
+    <button class="btn btn-sm" id="btn-copy-report">Copiar</button>
+    <button class="btn btn-sm btn-primary" id="btn-toggle-report">▶ Ver informe</button>
+  </div>
+
+  <!-- Panel expandible con el texto del informe -->
+  <div id="report-panel">
+    <pre id="report-text"></pre>
+  </div>
+
   <!-- Barra de estado inferior -->
   <div id="status-bar">
     <span id="conn-dot"></span>
     <span id="status-text">Iniciando…</span>
     &nbsp;·&nbsp; Update #<span id="num-act">0</span>
     &nbsp;·&nbsp; <span id="last-update">—</span>
-  </div>
-</div>
-
-<!-- ═══════════════ MODAL: REPORTE HT / FT ═══════════════════════════════ -->
-<div id="report-overlay">
-  <div id="report-box">
-    <div id="report-header">
-      <div id="report-tipo">INFORME</div>
-      <div style="display:flex;gap:8px">
-        <button class="btn btn-sm" id="btn-copy-report">Copiar</button>
-        <button class="btn btn-sm" id="btn-close-report">✕ Cerrar</button>
-      </div>
-    </div>
-    <div id="report-body">
-      <pre id="report-text"></pre>
-    </div>
   </div>
 </div>
 
@@ -707,7 +722,10 @@ async function startMatch(eventId, league) {
   document.getElementById("waiting-msg").classList.add("visible");
   document.getElementById("main-grid").style.display = "none";
   document.getElementById("error-banner").classList.remove("visible");
+  document.getElementById("report-bar").classList.remove("visible");
+  document.getElementById("report-panel").classList.remove("open");
   document.getElementById("num-act").textContent = "0";
+  _reportRawText = "";
   chartLabels = [];
   chartHomeData = [];
   chartAwayData = [];
@@ -769,7 +787,7 @@ function handleUpdate(data) {
     initChart(data.info.home_name, data.info.away_name);
   }
 
-  if (data.info)    updateHeader(data.info, data.proxima);
+  if (data.info)    updateHeader(data.info, data.proxima, data.eventos);
   if (data.stats)   updateStats(data.stats, data.info);
   if (data.lecturas) updateTactical(data.lecturas);
   if (data.alerta)   updateAlerta(data.alerta);
@@ -804,7 +822,7 @@ function handleEnded() {
 }
 
 // ── Encabezado del partido ──────────────────────────────────────────────────
-function updateHeader(info, proxima) {
+function updateHeader(info, proxima, eventos) {
   document.getElementById("competition-name").textContent =
     info.tournament || "Sin competencia";
   document.getElementById("home-name").textContent = info.home_name || "Local";
@@ -821,9 +839,45 @@ function updateHeader(info, proxima) {
   estEl.textContent = info.estadio ? ("⬡ " + info.estadio + (info.ciudad ? ", " + info.ciudad : "")) : "";
   arbEl.textContent = info.arbitro ? ("▲ Árbitro: " + info.arbitro) : "";
 
+  // Goles en encabezado
+  updateGoals(eventos || [], info);
+
+  // Fuentes activas
+  const fuEl = document.getElementById("fuentes-activas");
+  if (info.fuentes) {
+    const e = info.fuentes.espn;
+    const a = info.fuentes.apif;
+    fuEl.innerHTML =
+      `Fuentes: <span class="${e ? 'fuente-ok' : 'fuente-off'}">${e ? "✓" : "✗"} ESPN</span>` +
+      `&nbsp;&nbsp;<span class="${a ? 'fuente-ok' : 'fuente-off'}">${a ? "✓" : "✗"} API-Football</span>`;
+    fuEl.style.display = "";
+  } else {
+    fuEl.style.display = "none";
+  }
+
   // Próxima actualización
   const proxEl = document.getElementById("proxima-update");
   proxEl.textContent = proxima ? "Próxima actualización: " + proxima : "";
+}
+
+function updateGoals(eventos, info) {
+  const goalsList = document.getElementById("goals-list");
+  const goals = (eventos || []).filter(e => e.tipo === "gol");
+  if (goals.length === 0) { goalsList.style.display = "none"; goalsList.innerHTML = ""; return; }
+  goalsList.style.display = "";
+  goalsList.innerHTML = goals
+    .slice().sort((a, b) => (a.minuto || 0) - (b.minuto || 0))
+    .map(g => {
+      const minStr  = g.minuto ? `Min. ${g.minuto}'` : "";
+      const jugador = g.jugador ? escHtml(g.jugador) : "";
+      const asist   = g.asistencia ? ` <span style="color:var(--text2)">(Asist: ${escHtml(g.asistencia)})</span>` : "";
+      const equipo  = g.equipo ? `<span style="color:var(--text2);font-size:11px">${escHtml(g.equipo)}</span>` : "";
+      return `<div class="goal-item">
+        <span>⚽</span>
+        <span style="color:var(--text2);font-size:11px">${escHtml(minStr)}</span>
+        <span class="goal-player">${jugador}</span>${asist} ${equipo}
+      </div>`;
+    }).join("");
 }
 
 function formatMatchTime(info) {
@@ -1041,44 +1095,50 @@ function updateEvents(eventos, arb) {
   }
 }
 
-// ── Informe HT / FT ─────────────────────────────────────────────────────────
-function showReport(report) {
-  const overlay = document.getElementById("report-overlay");
-  const tipoEl  = document.getElementById("report-tipo");
-  const textEl  = document.getElementById("report-text");
+// ── Informe HT / FT (panel inline expandible) ───────────────────────────────
+let _reportRawText = "";
 
-  tipoEl.textContent = report.tipo === "HT"
-    ? "Informe de Primer Tiempo"
-    : "Informe Final";
-  tipoEl.className = report.tipo === "HT" ? "ht" : "ft";
-  textEl.textContent = report.texto || "";
-  overlay.classList.add("visible");
-
-  // Inicializar gráfico aquí si aún no está listo
-  if (!possessionChart) {
-    const hName = document.getElementById("home-name").textContent;
-    const aName = document.getElementById("away-name").textContent;
-    initChart(hName, aName);
-  }
+function renderReport(rawText) {
+  // Convierte **texto** → <strong>texto</strong>, escapa el resto
+  return escHtml(rawText).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
 }
 
-document.getElementById("btn-close-report").addEventListener("click", () => {
-  document.getElementById("report-overlay").classList.remove("visible");
+function showReport(report) {
+  _reportRawText = report.texto || "";
+
+  const bar      = document.getElementById("report-bar");
+  const labelEl  = document.getElementById("report-bar-label");
+  const textEl   = document.getElementById("report-text");
+  const toggleBtn = document.getElementById("btn-toggle-report");
+
+  const esHT = report.tipo === "HT";
+  labelEl.textContent = esHT ? "▶ INFORME DE PRIMER TIEMPO" : "▶ INFORME FINAL";
+  labelEl.className   = esHT ? "ht" : "ft";
+
+  textEl.innerHTML = renderReport(_reportRawText);
+
+  bar.classList.add("visible");
+  // Abrir automáticamente al llegar
+  document.getElementById("report-panel").classList.add("open");
+  toggleBtn.textContent = "▼ Cerrar informe";
+}
+
+document.getElementById("btn-toggle-report").addEventListener("click", () => {
+  const panel     = document.getElementById("report-panel");
+  const toggleBtn = document.getElementById("btn-toggle-report");
+  const isOpen    = panel.classList.contains("open");
+  panel.classList.toggle("open");
+  toggleBtn.textContent = isOpen ? "▶ Ver informe" : "▼ Cerrar informe";
 });
 
 document.getElementById("btn-copy-report").addEventListener("click", () => {
-  const text = document.getElementById("report-text").textContent;
-  navigator.clipboard.writeText(text).then(() => {
-    document.getElementById("btn-copy-report").textContent = "✓ Copiado";
-    setTimeout(() => {
-      document.getElementById("btn-copy-report").textContent = "Copiar";
-    }, 2000);
+  // Copiar el texto sin marcadores **
+  const plain = _reportRawText.replace(/\*\*(.+?)\*\*/g, "$1");
+  navigator.clipboard.writeText(plain).then(() => {
+    const btn = document.getElementById("btn-copy-report");
+    btn.textContent = "✓ Copiado";
+    setTimeout(() => { btn.textContent = "Copiar"; }, 2000);
   });
-});
-
-// Cerrar modal al hacer clic fuera
-document.getElementById("report-overlay").addEventListener("click", function(e) {
-  if (e.target === this) this.classList.remove("visible");
 });
 
 // ── Inicialización del chart (se llama desde handleUpdate) ──────────────────

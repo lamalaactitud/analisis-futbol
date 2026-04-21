@@ -90,6 +90,10 @@ def _n(val):
 def _sim(a, b):
     return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
+def _b(texto):
+    """Marcador de negrilla **texto**. En terminal → Rich/plain bold. En web → <strong>."""
+    return f"**{texto}**"
+
 def _wrap(texto, ancho=68, indent="  "):
     palabras = texto.split()
     lineas, linea = [], indent
@@ -550,17 +554,31 @@ def analisis_tactico(info, stats, history=None):
         dom  = h if pos_h >= pos_a else a
         sub  = a if pos_h >= pos_a else h
         myor = max(pos_h, pos_a); mnor = min(pos_h, pos_a)
+        # Coherencia con el marcador: ¿el equipo con más posesión está perdiendo?
+        dom_gols = (gh if dom == h else ga) if gh is not None and ga is not None else None
+        sub_gols = (ga if dom == h else gh) if gh is not None and ga is not None else None
+        pos_perdiendo = (dom_gols is not None and sub_gols is not None and dom_gols < sub_gols)
         if dif < 5:
             t.append(f"La pelota se reparte de manera casi equitativa ({pos_h:.0f}%–{pos_a:.0f}%). "
                      "El mediocampo es tierra de nadie; las disputas en zona media deciden quién "
                      "toma la iniciativa.")
         elif dif < 15:
-            t.append(f"{dom} maneja más el balón ({myor:.0f}% frente al {mnor:.0f}% de {sub}). "
-                     f"{sub} cede el centro del campo y se organiza para salir en transición rápida.")
+            if pos_perdiendo:
+                t.append(f"{dom} maneja más el balón ({myor:.0f}% frente al {mnor:.0f}% de {sub}), "
+                         f"pero el marcador ({sub_gols:.0f}–{dom_gols:.0f}) muestra que {sub} "
+                         f"convierte mejor sus opciones pese a ceder la posesión.")
+            else:
+                t.append(f"{dom} maneja más el balón ({myor:.0f}% frente al {mnor:.0f}% de {sub}). "
+                         f"{sub} cede el centro del campo y se organiza para salir en transición rápida.")
         else:
-            t.append(f"{dom} ejerce un dominio territorial claro con el {myor:.0f}% de posesión. "
-                     f"La propuesta es controlar los tiempos y decidir cuándo atacar. "
-                     f"{sub} apuesta al bloque bajo y al contragolpe.")
+            if pos_perdiendo:
+                t.append(f"{dom} ejerce dominio territorial ({myor:.0f}% de posesión) "
+                         f"pero no lo convierte en goles — {sub} es más eficaz con menos recursos "
+                         f"y gana {sub_gols:.0f}–{dom_gols:.0f}.")
+            else:
+                t.append(f"{dom} ejerce un dominio territorial claro con el {myor:.0f}% de posesión. "
+                         f"La propuesta es controlar los tiempos y decidir cuándo atacar. "
+                         f"{sub} apuesta al bloque bajo y al contragolpe.")
 
     if ptot_h and pok_h and ptot_h > 0:
         pct = (pok_h / ptot_h) * 100
@@ -620,12 +638,23 @@ def analisis_tactico(info, stats, history=None):
     if cor_a is not None and ga is not None and cor_a >= 3 and ga >= 1:
         o.append(f"{a} explota los saques de esquina ({cor_a:.0f}) como vía de llegada al arco.")
 
+    # Coherencia final: equipo con más remates pero perdiendo en el marcador
+    if sht_h is not None and sht_a is not None and gh is not None and ga is not None:
+        if sht_h > sht_a + 3 and gh < ga and xg_h is None:
+            o.append(f"Pese a la superioridad en remates, {a} resuelve mejor "
+                     f"y gana {ga:.0f}–{gh:.0f} — la efectividad vale más que el volumen.")
+        elif sht_a > sht_h + 3 and ga < gh and xg_a is None:
+            o.append(f"Pese a generar más llegadas, {h} es más eficaz "
+                     f"y gana {gh:.0f}–{ga:.0f} — el marcador premia la definición sobre el dominio.")
+
     lecturas["ofensiva"] = " ".join(o) if o else \
         "Estadísticas ofensivas en construcción. Se actualizará con más datos."
 
     # ── 3. SOLIDEZ DEFENSIVA ────────────────────────────────────────────────────
     d = []
-    for nombre_gk, sav, equipo_rival in [(h, sav_h, a), (a, sav_a, h)]:
+    # goles_contra: goles que recibió cada equipo (para coherencia con marcador)
+    for nombre_gk, sav, equipo_rival, goles_contra in [
+            (h, sav_h, a, ga), (a, sav_a, h, gh)]:
         if sav is not None:
             if sav >= 5:
                 d.append(f"El portero de {nombre_gk} es la figura del partido con {sav:.0f} "
@@ -634,8 +663,14 @@ def analisis_tactico(info, stats, history=None):
                 d.append(f"El arquero de {nombre_gk} tuvo una tarde activa: "
                          f"{sav:.0f} intervenciones bajo palos.")
             elif sav == 0:
-                d.append(f"El portero de {nombre_gk} no fue exigido (0 atajadas), "
-                         f"señal de solidez defensiva o de escasa profundidad de {equipo_rival}.")
+                if goles_contra is not None and goles_contra > 0:
+                    # Ha recibido goles pero sin atajadas registradas: no afirmar solidez
+                    d.append(f"El portero de {nombre_gk} no registra atajadas oficiales "
+                             f"aunque {equipo_rival} marcó {goles_contra:.0f} gol(es) "
+                             f"— los datos del portero pueden estar incompletos.")
+                else:
+                    d.append(f"El portero de {nombre_gk} no fue exigido (0 atajadas), "
+                             f"señal de solidez defensiva o de escasa profundidad de {equipo_rival}.")
 
     if foul_h is not None and foul_a is not None:
         tot_f = foul_h + foul_a
@@ -1212,11 +1247,11 @@ def reporte_ht(info, stats, lecturas, history, ts, eventos=None):
     gh, ga = _n(info["home_score"]), _n(info["away_score"])
     if gh is not None and ga is not None:
         if gh > ga:
-            res = f"{h} gana la primera mitad {gh:.0f}–{ga:.0f}."
+            res = f"{_b(h)} gana la primera mitad {_b(f'{gh:.0f}–{ga:.0f}')}."
         elif ga > gh:
-            res = f"{a} se va al descanso ganando {ga:.0f}–{gh:.0f}."
+            res = f"{_b(a)} se va al descanso ganando {_b(f'{ga:.0f}–{gh:.0f}')}."
         else:
-            res = f"Empate {gh:.0f}–{ga:.0f} al término de la primera mitad."
+            res = f"{_b(f'Empate {gh:.0f}–{ga:.0f}')} al término de la primera mitad."
         lines += ["RESUMEN EJECUTIVO", SEP, _wrap(res), ""]
 
     secciones = [
@@ -1243,7 +1278,7 @@ def reporte_ht(info, stats, lecturas, history, ts, eventos=None):
     # Sección arbitral HT
     if eventos:
         sec_arb = _seccion_arbitral_reporte(eventos, info, stats)
-        lines += ["RESUMEN ARBITRAL — PRIMERA MITAD", SEP, sec_arb, ""]
+        lines += ["ANÁLISIS ARBITRAL — PRIMERA MITAD", SEP, sec_arb, ""]
 
     lines += ["PROYECCIÓN PARA EL SEGUNDO TIEMPO", SEP]
     if gh is not None and ga is not None:
@@ -1327,12 +1362,12 @@ def reporte_ft(info, stats, lecturas, stats_ht, history, ts, eventos=None):
                     )
                 else:
                     definicion.append(
-                        f"{ganador} se impuso {gf:.0f}–{gc:.0f} en un partido equilibrado. "
+                        f"{_b(ganador)} se impuso {_b(f'{gf:.0f}–{gc:.0f}')} en un partido equilibrado. "
                         "La diferencia estuvo en los detalles."
                     )
         else:
             definicion.append(
-                f"Empate {gh:.0f}–{ga:.0f}. Ninguno encontró la superioridad suficiente "
+                f"{_b(f'Empate {gh:.0f}–{ga:.0f}')}. Ninguno encontró la superioridad suficiente "
                 "para sentenciar. El resultado es justo para ambos."
             )
     lines.append(_wrap(" ".join(definicion)) if definicion else "  Sin datos suficientes.")
@@ -1437,7 +1472,7 @@ def reporte_ft(info, stats, lecturas, stats_ht, history, ts, eventos=None):
     # 5. RESUMEN ARBITRAL COMPLETO
     if eventos:
         sec_arb = _seccion_arbitral_reporte(eventos, info, stats)
-        lines += ["5. RESUMEN ARBITRAL DEL PARTIDO", SEP, sec_arb, ""]
+        lines += ["5. ANÁLISIS ARBITRAL DEL PARTIDO", SEP, sec_arb, ""]
 
     # 6. ANÁLISIS DE PORTEROS
     gk = analisis_porteros(info, stats)
@@ -1459,7 +1494,13 @@ def reporte_ft(info, stats, lecturas, stats_ht, history, ts, eventos=None):
 def mostrar_rich(info, stats, lecturas, num_act, apif_on, eventos=None):
     console = Console()
     console.clear()
-    fuentes  = "ESPN" + (" + API-Football" if apif_on else "")
+    f_dict = info.get("fuentes", {})
+    if f_dict:
+        e_s = "[green]✓ ESPN[/green]"    if f_dict.get("espn") else "[red]✗ ESPN[/red]"
+        a_s = "[green]✓ API-Football[/green]" if f_dict.get("apif") else "[dim]✗ API-Football[/dim]"
+        fuentes = f"Fuentes: {e_s}  {a_s}"
+    else:
+        fuentes = "ESPN" + (" + API-Football" if apif_on else "")
     header_t = _header_tiempo(info)
     if eventos is None:
         eventos = []
@@ -1552,7 +1593,13 @@ def limpiar():
 def mostrar_plano(info, stats, lecturas, num_act, apif_on, eventos=None):
     limpiar()
     ancho    = 70
-    fuentes  = "ESPN" + (" + API-Football" if apif_on else "")
+    f_dict = info.get("fuentes", {})
+    if f_dict:
+        e_s = "✓ ESPN" if f_dict.get("espn") else "✗ ESPN"
+        a_s = "✓ API-Football" if f_dict.get("apif") else "✗ API-Football"
+        fuentes = f"{e_s}  {a_s}"
+    else:
+        fuentes = "ESPN" + (" + API-Football" if apif_on else "")
     header_t = _header_tiempo(info)
     if eventos is None:
         eventos = []
@@ -1738,15 +1785,22 @@ def _fetch_full(event_id, league, evento, apif_fixture, apif_on):
     if not eventos:
         eventos = espn_get_events(sum_espn, info_act["home_name"], info_act["away_name"])
 
+    # Indicador de fuentes activas (para mostrar en UI)
+    espn_ok = bool(sum_espn and sum_espn.get("header"))
+    apif_ok = apif_on and fid is not None
+    info_act["fuentes"] = {"espn": espn_ok, "apif": apif_ok}
+
     return stats, info_act, eventos
 
 def _emitir(texto):
     if RICH_AVAILABLE:
         Console().clear()
-        Console().print(texto)
+        rich_texto = re.sub(r'\*\*(.+?)\*\*', r'[bold]\1[/bold]', texto)
+        Console().print(rich_texto)
     else:
         limpiar()
-        print(texto)
+        plain_texto = re.sub(r'\*\*(.+?)\*\*', r'\1', texto)
+        print(plain_texto)
 
 def _mensaje_cierre(info_act):
     return (
