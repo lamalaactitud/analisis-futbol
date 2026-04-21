@@ -349,15 +349,26 @@ def espn_get_meta(summary):
 def _apif_headers():
     return {"x-apisports-key": API_FOOTBALL_KEY, "Accept": "application/json"}
 
+_APIF_SUSPENDED = False   # True cuando la cuenta está suspendida — evita llamadas repetidas
+
 def apif_diagnostico():
     """Prueba la clave y el plan de API-Football. Retorna string con resultado."""
+    global _APIF_SUSPENDED
     if not API_FOOTBALL_KEY:
         return "API-Football: clave vacía — desactivado."
+    if _APIF_SUSPENDED:
+        return "API-Football: cuenta suspendida — usando solo ESPN."
     try:
         r = requests.get(f"{APIF_BASE}/status", headers=_apif_headers(), timeout=10)
         data = r.json()
         errors = data.get("errors", {})
-        if r.status_code == 401 or errors:
+        if errors:
+            err_str = str(errors)
+            if "suspended" in err_str.lower() or "access" in (errors if isinstance(errors, dict) else {}):
+                _APIF_SUSPENDED = True
+                return "API-Football: cuenta SUSPENDIDA — usando solo ESPN. Verifica en dashboard.api-football.com"
+            return "API-Football: CLAVE INVÁLIDA — revisa en dashboard.api-football.com"
+        if r.status_code == 401:
             return "API-Football: CLAVE INVÁLIDA — revisa en dashboard.api-football.com"
         if r.status_code != 200:
             return f"API-Football: error HTTP {r.status_code}"
@@ -374,14 +385,26 @@ def apif_diagnostico():
         return f"API-Football: sin conexión — {e}"
 
 def apif_find_fixture(home_name, away_name):
-    if not API_FOOTBALL_KEY:
+    global _APIF_SUSPENDED
+    if not API_FOOTBALL_KEY or _APIF_SUSPENDED:
         return None
     try:
         r = requests.get(f"{APIF_BASE}/fixtures", params={"live": "all"},
                          headers=_apif_headers(), timeout=15)
         data = r.json()
-        if r.status_code != 200 or data.get("errors"):
-            print(f"  [API-Football] Error en fixtures: {data.get('errors', r.status_code)}")
+        errors = data.get("errors", {})
+        if errors:
+            # Detectar cuenta suspendida específicamente
+            err_str = str(errors)
+            if "suspended" in err_str.lower() or "access" in (errors if isinstance(errors, dict) else {}):
+                _APIF_SUSPENDED = True
+                print("  [API-Football] Cuenta suspendida — usando solo ESPN para este partido.")
+                print("  Verifica tu cuenta en: https://dashboard.api-football.com")
+                return None
+            print(f"  [API-Football] Error en fixtures: {errors}")
+            return None
+        if r.status_code != 200:
+            print(f"  [API-Football] HTTP {r.status_code}")
             return None
         fixtures = data.get("response", [])
         best_score, best = 0, None
@@ -402,7 +425,7 @@ def apif_find_fixture(home_name, away_name):
         return None
 
 def apif_get_stats(fixture_id):
-    if not API_FOOTBALL_KEY or not fixture_id:
+    if not API_FOOTBALL_KEY or not fixture_id or _APIF_SUSPENDED:
         return {"home": {}, "away": {}}
     try:
         r = requests.get(f"{APIF_BASE}/fixtures/statistics",
@@ -425,7 +448,7 @@ def apif_get_stats(fixture_id):
 
 def apif_get_events(fixture_id):
     """Obtiene eventos del partido (tarjetas, goles, sustituciones) desde API-Football."""
-    if not API_FOOTBALL_KEY or not fixture_id:
+    if not API_FOOTBALL_KEY or not fixture_id or _APIF_SUSPENDED:
         return []
     try:
         r = requests.get(f"{APIF_BASE}/fixtures/events",
