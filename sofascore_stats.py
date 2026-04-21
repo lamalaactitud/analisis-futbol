@@ -107,6 +107,19 @@ def _extraer_minuto(match_time):
     m = re.search(r'(\d+)', str(match_time))
     return int(m.group(1)) if m else None
 
+def _proxima_min(match_time, delta=INTERVALO_ACTUALIZACION // 60):
+    """Devuelve 'Min. 73'' dado match_time='70'' y delta=3.
+    Soporta tiempo añadido: '45+2'' → 'Min. 45+5''."""
+    s = str(match_time)
+    m_extra = re.match(r'(\d+)\+(\d+)', s)
+    if m_extra:
+        base, add = int(m_extra.group(1)), int(m_extra.group(2))
+        return f"Min. {base}+{add + delta}'"
+    m_normal = re.search(r'(\d+)', s)
+    if m_normal:
+        return f"Min. {int(m_normal.group(1)) + delta}'"
+    return f"en {delta} min"
+
 def _header_tiempo(info):
     hora       = datetime.now().strftime("%H:%M")
     match_time = info.get("match_time", "") if isinstance(info, dict) else info
@@ -1528,7 +1541,7 @@ def mostrar_rich(info, stats, lecturas, num_act, apif_on, eventos=None):
         console.print(f"[dim]  Lectura[/dim]  [italic]{arb['interpretacion']}[/italic]")
 
     console.print(f"\n[dim]Actualizado: {datetime.now().strftime('%H:%M:%S')}  ·  "
-                  f"#{num_act}  ·  Próxima en {INTERVALO_ACTUALIZACION//60} min  ·  "
+                  f"#{num_act}  ·  Próxima actualización: {_proxima_min(info.get('match_time', ''))}  ·  "
                   "Ctrl+C para salir[/dim]")
 
 
@@ -1593,7 +1606,8 @@ def mostrar_plano(info, stats, lecturas, num_act, apif_on, eventos=None):
         print(_wrap(arb['interpretacion']))
 
     print(f"\n{SEP}")
-    print(f"  {datetime.now().strftime('%H:%M:%S')}  |  Update #{num_act}  |  Ctrl+C = salir")
+    print(f"  {datetime.now().strftime('%H:%M:%S')}  |  Update #{num_act}  |  "
+          f"Próxima actualización: {_proxima_min(info.get('match_time', ''))}  |  Ctrl+C = salir")
     print(SEP2)
 
 
