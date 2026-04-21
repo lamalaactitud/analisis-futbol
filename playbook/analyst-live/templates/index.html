@@ -1,0 +1,1096 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PLAYBOOK — Analyst Live</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    /* ── Reset & variables ─────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:         #0a0a0a;
+      --bg2:        #111111;
+      --bg3:        #1a1a1a;
+      --border:     #2a2a2a;
+      --text:       #f0f0f0;
+      --text2:      #aaaaaa;
+      --home:       #3b82f6;   /* azul */
+      --away:       #f97316;   /* naranja */
+      --accent:     #22c55e;   /* verde */
+      --danger:     #ef4444;
+      --yellow:     #eab308;
+      --radius:     10px;
+      --font:       -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    [data-theme="light"] {
+      --bg:     #f5f5f5;
+      --bg2:    #ffffff;
+      --bg3:    #e8e8e8;
+      --border: #d0d0d0;
+      --text:   #111111;
+      --text2:  #555555;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 14px;
+      line-height: 1.5;
+      min-height: 100vh;
+    }
+
+    /* ── Topbar ─────────────────────────────────────────────────── */
+    #topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 18px;
+      background: var(--bg2);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    #topbar .brand {
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 2px;
+      color: var(--text2);
+    }
+    #topbar .brand span { color: var(--accent); }
+    #topbar-actions { display: flex; gap: 10px; align-items: center; }
+
+    /* ── Buttons ────────────────────────────────────────────────── */
+    .btn {
+      padding: 6px 14px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--bg3);
+      color: var(--text);
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: .5px;
+      transition: opacity .15s;
+    }
+    .btn:hover { opacity: .8; }
+    .btn-primary { background: var(--accent); border-color: var(--accent); color: #000; }
+    .btn-danger  { background: var(--danger); border-color: var(--danger); color: #fff; }
+    .btn-sm      { padding: 4px 10px; font-size: 11px; }
+
+    /* ── Screens ────────────────────────────────────────────────── */
+    .screen { display: none; }
+    .screen.active { display: block; }
+
+    /* ── Selector screen ────────────────────────────────────────── */
+    #screen-selector {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 40px 18px;
+    }
+    #screen-selector h1 {
+      font-size: 22px;
+      font-weight: 800;
+      letter-spacing: 1px;
+      margin-bottom: 6px;
+    }
+    #screen-selector h1 span { color: var(--accent); }
+    #screen-selector p { color: var(--text2); margin-bottom: 28px; }
+
+    #search-box {
+      width: 100%;
+      padding: 10px 14px;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      background: var(--bg2);
+      color: var(--text);
+      font-size: 14px;
+      margin-bottom: 16px;
+      outline: none;
+    }
+    #search-box:focus { border-color: var(--accent); }
+
+    #matches-list { display: flex; flex-direction: column; gap: 10px; }
+
+    .match-card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 18px;
+      cursor: pointer;
+      transition: border-color .15s, background .15s;
+    }
+    .match-card:hover { border-color: var(--accent); background: var(--bg3); }
+    .match-card .competition {
+      font-size: 11px;
+      color: var(--text2);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 8px;
+    }
+    .match-card .teams {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 16px;
+      font-weight: 700;
+    }
+    .match-card .score {
+      font-size: 20px;
+      font-weight: 900;
+      color: var(--accent);
+      min-width: 50px;
+      text-align: center;
+    }
+    .match-card .time-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 700;
+      background: var(--bg3);
+      color: var(--text2);
+      margin-left: auto;
+    }
+    .match-card .time-badge.live { background: #16a34a22; color: var(--accent); }
+    .match-card .time-badge.ht   { background: #3b82f622; color: var(--home); }
+
+    #btn-refresh { margin-bottom: 16px; }
+    #no-matches { color: var(--text2); padding: 20px; text-align: center; display: none; }
+    #matches-loading { color: var(--text2); padding: 20px; text-align: center; }
+
+    /* ── Live screen ────────────────────────────────────────────── */
+    #screen-live { padding: 16px; }
+
+    /* ── Match header ───────────────────────────────────────────── */
+    #match-header {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      text-align: center;
+      margin-bottom: 16px;
+    }
+    #competition-name {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      color: var(--text2);
+      margin-bottom: 12px;
+    }
+    #score-row {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      margin-bottom: 10px;
+    }
+    .team-name {
+      font-size: 18px;
+      font-weight: 800;
+      max-width: 180px;
+    }
+    .team-name.home { color: var(--home); text-align: right; }
+    .team-name.away { color: var(--away); text-align: left; }
+    #score-display {
+      font-size: 56px;
+      font-weight: 900;
+      letter-spacing: -2px;
+      line-height: 1;
+    }
+    #match-time-badge {
+      display: inline-block;
+      padding: 4px 14px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 700;
+      background: var(--bg3);
+      color: var(--accent);
+      margin-bottom: 10px;
+    }
+    #match-meta {
+      font-size: 12px;
+      color: var(--text2);
+      margin-top: 8px;
+    }
+    #match-meta span { margin: 0 8px; }
+    #proxima-update {
+      display: inline-block;
+      margin-top: 8px;
+      font-size: 11px;
+      color: var(--text2);
+      background: var(--bg3);
+      border-radius: 4px;
+      padding: 2px 10px;
+    }
+
+    /* ── Main grid ──────────────────────────────────────────────── */
+    #main-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 16px;
+    }
+    @media (min-width: 900px) {
+      #main-grid { grid-template-columns: 1fr 1fr; }
+    }
+
+    /* ── Panels ─────────────────────────────────────────────────── */
+    .panel {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+    }
+    .panel-title {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: var(--text2);
+      margin-bottom: 14px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 8px;
+    }
+
+    /* ── Stat bars ──────────────────────────────────────────────── */
+    .stat-row { margin-bottom: 14px; }
+    .stat-label {
+      font-size: 11px;
+      color: var(--text2);
+      text-align: center;
+      margin-bottom: 4px;
+    }
+    .stat-bar-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .stat-val { font-size: 13px; font-weight: 700; min-width: 36px; }
+    .stat-val.home { color: var(--home); text-align: right; }
+    .stat-val.away { color: var(--away); }
+    .split-bar {
+      flex: 1;
+      height: 8px;
+      border-radius: 4px;
+      background: var(--bg3);
+      overflow: hidden;
+      display: flex;
+    }
+    .split-bar .bar-home {
+      background: var(--home);
+      height: 100%;
+      transition: width .5s ease;
+    }
+    .split-bar .bar-away {
+      background: var(--away);
+      height: 100%;
+      transition: width .5s ease;
+    }
+
+    /* ── Chart ──────────────────────────────────────────────────── */
+    #chart-container {
+      margin-top: 16px;
+      border-top: 1px solid var(--border);
+      padding-top: 14px;
+    }
+    #chart-container canvas { max-height: 180px; }
+
+    /* ── Analysis text ──────────────────────────────────────────── */
+    .analysis-section { margin-bottom: 14px; }
+    .analysis-section-title {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      color: var(--text2);
+      margin-bottom: 6px;
+    }
+    .analysis-text {
+      font-size: 13px;
+      line-height: 1.6;
+      color: var(--text);
+    }
+
+    /* ── Dominance alert ────────────────────────────────────────── */
+    #alerta-dominio {
+      display: none;
+      background: #22c55e18;
+      border: 1px solid #22c55e44;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--accent);
+      margin-bottom: 14px;
+    }
+    #alerta-dominio.visible { display: block; }
+
+    /* ── Events timeline ────────────────────────────────────────── */
+    .event-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 5px 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+    }
+    .event-item:last-child { border-bottom: none; }
+    .event-min { min-width: 34px; color: var(--text2); font-size: 11px; }
+    .event-icon { font-size: 14px; }
+    .event-desc { flex: 1; }
+    .event-team { color: var(--text2); font-size: 11px; }
+
+    /* ── HT/FT Report modal ─────────────────────────────────────── */
+    #report-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,.85);
+      z-index: 200;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    #report-overlay.visible { display: flex; }
+    #report-box {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      max-width: 680px;
+      width: 100%;
+      max-height: 85vh;
+      display: flex;
+      flex-direction: column;
+    }
+    #report-header {
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    #report-tipo {
+      font-size: 13px;
+      font-weight: 800;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+    }
+    #report-tipo.ht { color: var(--home); }
+    #report-tipo.ft { color: var(--accent); }
+    #report-body {
+      padding: 18px;
+      overflow-y: auto;
+      flex: 1;
+    }
+    #report-text {
+      font-family: "Courier New", monospace;
+      font-size: 12px;
+      line-height: 1.7;
+      white-space: pre-wrap;
+      color: var(--text);
+    }
+
+    /* ── Status bar ─────────────────────────────────────────────── */
+    #status-bar {
+      text-align: center;
+      font-size: 12px;
+      color: var(--text2);
+      padding: 12px;
+      margin-top: 16px;
+    }
+
+    /* ── Connection indicator ───────────────────────────────────── */
+    #conn-dot {
+      display: inline-block;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #555;
+      margin-right: 4px;
+      vertical-align: middle;
+    }
+    #conn-dot.connected    { background: var(--accent); }
+    #conn-dot.disconnected { background: var(--danger); }
+
+    /* ── Waiting spinner ────────────────────────────────────────── */
+    #waiting-msg {
+      text-align: center;
+      padding: 40px;
+      color: var(--text2);
+      display: none;
+    }
+    #waiting-msg.visible { display: block; }
+    .spinner {
+      display: inline-block;
+      width: 24px; height: 24px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+      margin-bottom: 12px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Error banner ───────────────────────────────────────────── */
+    #error-banner {
+      display: none;
+      background: #ef444418;
+      border: 1px solid #ef444444;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 12px;
+      color: var(--danger);
+      margin-bottom: 12px;
+    }
+    #error-banner.visible { display: block; }
+
+    /* ── Responsive tweaks ──────────────────────────────────────── */
+    @media (max-width: 600px) {
+      #score-display { font-size: 40px; }
+      .team-name { font-size: 14px; max-width: 110px; }
+      #screen-live { padding: 10px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ═══════════════ TOP BAR ═══════════════════════════════════════════════ -->
+<div id="topbar">
+  <div class="brand">PLAYBOOK — <span>Analyst Live</span></div>
+  <div id="topbar-actions">
+    <button class="btn btn-sm" id="btn-back" style="display:none">← Partidos</button>
+    <button class="btn btn-sm btn-danger" id="btn-stop" style="display:none">■ Detener</button>
+    <button class="btn btn-sm" id="btn-theme">☀ / ☾</button>
+  </div>
+</div>
+
+<!-- ═══════════════ PANTALLA 1: SELECTOR ══════════════════════════════════ -->
+<div id="screen-selector" class="screen active">
+  <h1>PLAYBOOK — <span>Analyst Live</span></h1>
+  <p>Analizador táctico de fútbol en tiempo real</p>
+
+  {% if not analyzer_ok %}
+  <div style="background:#ef444418;border:1px solid #ef444444;border-radius:8px;padding:14px;margin-bottom:20px;color:#ef4444;font-size:12px;">
+    <strong>Error al cargar el analizador:</strong><br>{{ import_error }}<br><br>
+    Asegúrate de que <code>sofascore_stats.py</code> esté en el Escritorio.
+  </div>
+  {% endif %}
+
+  <button class="btn btn-primary" id="btn-refresh">↻ Cargar partidos en vivo</button>
+
+  <input type="text" id="search-box" placeholder="Buscar equipo o torneo…" style="display:none" />
+
+  <div id="matches-loading" style="display:none">
+    <div class="spinner"></div>
+    <br>Buscando partidos en vivo…
+  </div>
+
+  <div id="no-matches">No hay partidos en vivo en este momento. Intenta en unos minutos.</div>
+
+  <div id="matches-list"></div>
+</div>
+
+<!-- ═══════════════ PANTALLA 2: ANÁLISIS EN VIVO ══════════════════════════ -->
+<div id="screen-live" class="screen">
+
+  <!-- Encabezado del partido -->
+  <div id="match-header">
+    <div id="competition-name">—</div>
+    <div id="score-row">
+      <div class="team-name home" id="home-name">Local</div>
+      <div id="score-display"><span id="home-score">0</span> – <span id="away-score">0</span></div>
+      <div class="team-name away" id="away-name">Visitante</div>
+    </div>
+    <div id="match-time-badge">—</div>
+    <div id="match-meta">
+      <span id="meta-estadio"></span>
+      <span id="meta-arbitro"></span>
+    </div>
+    <div id="proxima-update"></div>
+  </div>
+
+  <!-- Spinner de espera inicial -->
+  <div id="waiting-msg" class="visible">
+    <div class="spinner"></div>
+    <p>Conectando con el analizador…<br><small>Primera actualización en unos segundos</small></p>
+  </div>
+
+  <!-- Banner de error -->
+  <div id="error-banner"></div>
+
+  <!-- Grid principal -->
+  <div id="main-grid" style="display:none">
+
+    <!-- ══ COLUMNA IZQUIERDA: Estadísticas ══ -->
+    <div>
+      <div class="panel" id="stats-panel">
+        <div class="panel-title">Estadísticas</div>
+        <div id="stats-bars">
+          <!-- generado por JS -->
+        </div>
+        <div id="chart-container">
+          <div class="panel-title" style="margin-top:4px">Evolución de posesión</div>
+          <canvas id="possession-chart"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ COLUMNA DERECHA: Análisis ══ -->
+    <div>
+
+      <!-- Alerta de dominio -->
+      <div id="alerta-dominio"></div>
+
+      <!-- Análisis táctico -->
+      <div class="panel" id="analysis-panel" style="margin-bottom:16px">
+        <div class="panel-title">Análisis Táctico</div>
+        <div id="tactical-sections">
+          <!-- generado por JS -->
+        </div>
+      </div>
+
+      <!-- Módulo arbitral -->
+      <div class="panel" id="arbitral-panel" style="display:none">
+        <div class="panel-title">Módulo Arbitral</div>
+        <div id="eventos-timeline"></div>
+        <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px">
+          <div id="arbitral-lectura" class="analysis-text" style="font-style:italic;color:var(--text2)"></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Barra de estado inferior -->
+  <div id="status-bar">
+    <span id="conn-dot"></span>
+    <span id="status-text">Iniciando…</span>
+    &nbsp;·&nbsp; Update #<span id="num-act">0</span>
+    &nbsp;·&nbsp; <span id="last-update">—</span>
+  </div>
+</div>
+
+<!-- ═══════════════ MODAL: REPORTE HT / FT ═══════════════════════════════ -->
+<div id="report-overlay">
+  <div id="report-box">
+    <div id="report-header">
+      <div id="report-tipo">INFORME</div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-sm" id="btn-copy-report">Copiar</button>
+        <button class="btn btn-sm" id="btn-close-report">✕ Cerrar</button>
+      </div>
+    </div>
+    <div id="report-body">
+      <pre id="report-text"></pre>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════ SCRIPTS ═══════════════════════════════════════════════ -->
+<script>
+// ── Tema oscuro / claro ─────────────────────────────────────────────────────
+const html = document.documentElement;
+const savedTheme = localStorage.getItem("playbook-theme") || "dark";
+html.setAttribute("data-theme", savedTheme);
+
+document.getElementById("btn-theme").addEventListener("click", () => {
+  const next = html.getAttribute("data-theme") === "dark" ? "light" : "dark";
+  html.setAttribute("data-theme", next);
+  localStorage.setItem("playbook-theme", next);
+  if (possessionChart) {
+    possessionChart.options.plugins.legend.labels.color =
+      next === "dark" ? "#aaaaaa" : "#555555";
+    possessionChart.update();
+  }
+});
+
+// ── Navegación entre pantallas ──────────────────────────────────────────────
+function showScreen(id) {
+  document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
+  document.getElementById(id).classList.add("active");
+  const isLive = id === "screen-live";
+  document.getElementById("btn-back").style.display = isLive ? "" : "none";
+  document.getElementById("btn-stop").style.display = isLive ? "" : "none";
+}
+
+document.getElementById("btn-back").addEventListener("click", () => {
+  fetch("/api/stop", { method: "POST" });
+  if (eventSource) { eventSource.close(); eventSource = null; }
+  showScreen("screen-selector");
+  setConnDot("disconnected");
+});
+
+document.getElementById("btn-stop").addEventListener("click", () => {
+  fetch("/api/stop", { method: "POST" });
+});
+
+// ── Carga de partidos ───────────────────────────────────────────────────────
+document.getElementById("btn-refresh").addEventListener("click", loadMatches);
+
+async function loadMatches() {
+  const list    = document.getElementById("matches-list");
+  const loading = document.getElementById("matches-loading");
+  const noMatch = document.getElementById("no-matches");
+  const search  = document.getElementById("search-box");
+
+  list.innerHTML = "";
+  loading.style.display = "block";
+  noMatch.style.display  = "none";
+  search.style.display   = "none";
+
+  try {
+    const res  = await fetch("/api/matches");
+    const data = await res.json();
+    loading.style.display = "none";
+
+    if (data.error) {
+      list.innerHTML = `<div style="color:var(--danger);font-size:13px">${data.error}</div>`;
+      return;
+    }
+    if (!data.matches || data.matches.length === 0) {
+      noMatch.style.display = "block";
+      return;
+    }
+
+    allMatches = data.matches;
+    search.style.display = "";
+    renderMatches(data.matches);
+
+  } catch(e) {
+    loading.style.display = "none";
+    list.innerHTML = `<div style="color:var(--danger)">Error de conexión: ${e.message}</div>`;
+  }
+}
+
+let allMatches = [];
+
+document.getElementById("search-box").addEventListener("input", function() {
+  const q = this.value.toLowerCase();
+  const filtered = allMatches.filter(m =>
+    m.home_name.toLowerCase().includes(q) ||
+    m.away_name.toLowerCase().includes(q) ||
+    m.tournament.toLowerCase().includes(q)
+  );
+  renderMatches(filtered);
+});
+
+function renderMatches(matches) {
+  const list = document.getElementById("matches-list");
+  list.innerHTML = "";
+  matches.forEach(m => {
+    const isLive = m.state === "in" && !m.is_ht;
+    const isHT   = m.is_ht;
+    const badgeCls = isLive ? "live" : (isHT ? "ht" : "");
+    const timeLabel = m.match_time || (m.state === "pre" ? "Próximo" : "—");
+
+    const card = document.createElement("div");
+    card.className = "match-card";
+    card.innerHTML = `
+      <div class="competition">${m.tournament || "Sin competencia"}</div>
+      <div class="teams">
+        <div style="flex:1;font-weight:700">${m.home_name}</div>
+        <div class="score">${m.home_score} – ${m.away_score}</div>
+        <div style="flex:1;font-weight:700;text-align:right">${m.away_name}</div>
+        <div class="time-badge ${badgeCls}">${timeLabel}</div>
+      </div>
+    `;
+    card.addEventListener("click", () => startMatch(m.event_id, m.league));
+    list.appendChild(card);
+  });
+}
+
+// ── Iniciar análisis de partido ─────────────────────────────────────────────
+async function startMatch(eventId, league) {
+  showScreen("screen-live");
+  document.getElementById("waiting-msg").classList.add("visible");
+  document.getElementById("main-grid").style.display = "none";
+  document.getElementById("error-banner").classList.remove("visible");
+  document.getElementById("num-act").textContent = "0";
+  chartLabels = [];
+  chartHomeData = [];
+  chartAwayData = [];
+  if (possessionChart) possessionChart.data.labels = [],
+    possessionChart.data.datasets[0].data = [],
+    possessionChart.data.datasets[1].data = [],
+    possessionChart.update();
+
+  await fetch("/api/start", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ event_id: eventId, league: league }),
+  });
+
+  connectSSE();
+}
+
+// ── SSE ─────────────────────────────────────────────────────────────────────
+let eventSource = null;
+
+function connectSSE() {
+  if (eventSource) eventSource.close();
+  setConnDot("disconnected");
+
+  eventSource = new EventSource("/stream");
+
+  eventSource.onopen = () => setConnDot("connected");
+
+  eventSource.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === "update") handleUpdate(msg.data);
+      if (msg.type === "error")  handleError(msg.data.mensaje);
+      if (msg.type === "ended")  handleEnded();
+    } catch (_) {}
+  };
+
+  eventSource.onerror = () => {
+    setConnDot("disconnected");
+    // EventSource se reconecta automáticamente
+  };
+}
+
+function setConnDot(state) {
+  const dot = document.getElementById("conn-dot");
+  dot.className = ""; // reset
+  dot.classList.add(state);
+}
+
+// ── Procesar actualización ──────────────────────────────────────────────────
+function handleUpdate(data) {
+  document.getElementById("waiting-msg").classList.remove("visible");
+  document.getElementById("main-grid").style.display = "";
+  document.getElementById("error-banner").classList.remove("visible");
+
+  // Inicializar gráfico con nombres de equipos al primer update
+  if (!firstInfoReceived && data.info) {
+    firstInfoReceived = true;
+    initChart(data.info.home_name, data.info.away_name);
+  }
+
+  if (data.info)    updateHeader(data.info, data.proxima);
+  if (data.stats)   updateStats(data.stats, data.info);
+  if (data.lecturas) updateTactical(data.lecturas);
+  if (data.alerta)   updateAlerta(data.alerta);
+  else               document.getElementById("alerta-dominio").classList.remove("visible");
+  if (data.eventos && data.eventos.length > 0) updateEvents(data.eventos, data.arb);
+  if (data.report)   showReport(data.report);
+
+  // Evolución de posesión (chart)
+  if (data.info && data.stats) {
+    const min = data.info.match_time || data.info.minuto || "";
+    const hp = parseFloat((data.stats.home || {}).possessionPct) || null;
+    const ap = parseFloat((data.stats.away || {}).possessionPct) || null;
+    if (hp !== null && ap !== null) addChartPoint(min, hp, ap);
+  }
+
+  document.getElementById("num-act").textContent = data.num_act || 0;
+  document.getElementById("last-update").textContent =
+    new Date().toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  document.getElementById("status-text").textContent = "En vivo";
+}
+
+function handleError(msg) {
+  const banner = document.getElementById("error-banner");
+  banner.textContent = "Error: " + msg;
+  banner.classList.add("visible");
+  document.getElementById("status-text").textContent = "Error — reintentando…";
+}
+
+function handleEnded() {
+  document.getElementById("status-text").textContent = "Partido finalizado";
+  setConnDot("disconnected");
+}
+
+// ── Encabezado del partido ──────────────────────────────────────────────────
+function updateHeader(info, proxima) {
+  document.getElementById("competition-name").textContent =
+    info.tournament || "Sin competencia";
+  document.getElementById("home-name").textContent = info.home_name || "Local";
+  document.getElementById("away-name").textContent = info.away_name || "Visitante";
+  document.getElementById("home-score").textContent = info.home_score ?? "0";
+  document.getElementById("away-score").textContent = info.away_score ?? "0";
+
+  const badge = document.getElementById("match-time-badge");
+  badge.textContent = formatMatchTime(info);
+
+  // Meta
+  const estEl = document.getElementById("meta-estadio");
+  const arbEl = document.getElementById("meta-arbitro");
+  estEl.textContent = info.estadio ? ("⬡ " + info.estadio + (info.ciudad ? ", " + info.ciudad : "")) : "";
+  arbEl.textContent = info.arbitro ? ("▲ Árbitro: " + info.arbitro) : "";
+
+  // Próxima actualización
+  const proxEl = document.getElementById("proxima-update");
+  proxEl.textContent = proxima ? "Próxima actualización: " + proxima : "";
+}
+
+function formatMatchTime(info) {
+  if (info.state === "post")      return "PARTIDO FINALIZADO";
+  if (info.is_ht)                  return "MEDIO TIEMPO";
+  if (info.match_time === "AET")   return "TIEMPO EXTRA";
+  if (info.match_time === "AP" || info.match_time === "Penalties") return "PENALES";
+  const min = info.match_time;
+  if (!min || min === "En vivo")   return "EN VIVO";
+  const p = info.period;
+  const pLabel = p === 1 ? "1T" : p === 2 ? "2T" : p === 3 ? "ET" : "";
+  return `${pLabel} · Min. ${min}`;
+}
+
+// ── Barras de estadísticas ──────────────────────────────────────────────────
+const STAT_DEFS = [
+  { key: "possessionPct",  label: "Posesión",      pct: true  },
+  { key: "shotsOnTarget",  label: "Tiros al arco",  pct: false },
+  { key: "totalShots",     label: "Tiros totales",  pct: false },
+  { key: "wonCorners",     label: "Córners",         pct: false },
+  { key: "foulsCommitted", label: "Faltas",          pct: false },
+  { key: "yellowCards",    label: "T. Amarillas",    pct: false },
+];
+
+function updateStats(stats, info) {
+  const container = document.getElementById("stats-bars");
+  container.innerHTML = "";
+  const home = stats.home || {};
+  const away = stats.away || {};
+
+  STAT_DEFS.forEach(def => {
+    const hRaw = home[def.key];
+    const aRaw = away[def.key];
+    if (hRaw == null && aRaw == null) return;
+
+    const hVal = parseFloat(hRaw) || 0;
+    const aVal = parseFloat(aRaw) || 0;
+
+    let hPct, aPct;
+    if (def.pct) {
+      hPct = hVal;
+      aPct = 100 - hVal;
+    } else {
+      const total = hVal + aVal || 1;
+      hPct = (hVal / total) * 100;
+      aPct = (aVal / total) * 100;
+    }
+
+    const label = def.pct
+      ? `${hRaw ?? "—"}%`
+      : (hRaw ?? "—");
+    const aLabel = def.pct
+      ? `${Math.round(100 - hVal)}%`
+      : (aRaw ?? "—");
+
+    const row = document.createElement("div");
+    row.className = "stat-row";
+    row.innerHTML = `
+      <div class="stat-label">${def.label}</div>
+      <div class="stat-bar-wrap">
+        <div class="stat-val home">${label}</div>
+        <div class="split-bar">
+          <div class="bar-home" style="width:${hPct}%"></div>
+          <div class="bar-away" style="width:${aPct}%"></div>
+        </div>
+        <div class="stat-val away">${aLabel}</div>
+      </div>
+    `;
+    container.appendChild(row);
+  });
+}
+
+// ── Gráfico de posesión ─────────────────────────────────────────────────────
+let possessionChart = null;
+let chartLabels    = [];
+let chartHomeData  = [];
+let chartAwayData  = [];
+
+function initChart(homeName, awayName) {
+  const ctx = document.getElementById("possession-chart").getContext("2d");
+  const isDark = html.getAttribute("data-theme") === "dark";
+  const textColor = isDark ? "#aaaaaa" : "#555555";
+
+  if (possessionChart) possessionChart.destroy();
+  possessionChart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels: chartLabels,
+      datasets: [
+        {
+          label: homeName || "Local",
+          data: chartHomeData,
+          borderColor: "#3b82f6",
+          backgroundColor: "rgba(59,130,246,.15)",
+          tension: .3,
+          fill: true,
+          pointRadius: 3,
+        },
+        {
+          label: awayName || "Visitante",
+          data: chartAwayData,
+          borderColor: "#f97316",
+          backgroundColor: "rgba(249,115,22,.10)",
+          tension: .3,
+          fill: true,
+          pointRadius: 3,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      animation: { duration: 400 },
+      scales: {
+        y: {
+          min: 0, max: 100,
+          ticks: { color: textColor, callback: v => v + "%" },
+          grid:  { color: "rgba(128,128,128,.15)" },
+        },
+        x: {
+          ticks: { color: textColor, maxTicksLimit: 8 },
+          grid:  { color: "rgba(128,128,128,.10)" },
+        },
+      },
+      plugins: {
+        legend: { labels: { color: textColor, boxWidth: 12 } },
+        tooltip: { callbacks: { label: ctx => ctx.dataset.label + ": " + ctx.parsed.y + "%" } },
+      },
+    },
+  });
+}
+
+function addChartPoint(label, home, away) {
+  chartLabels.push(label);
+  chartHomeData.push(home);
+  chartAwayData.push(away);
+  if (possessionChart) {
+    possessionChart.data.labels    = chartLabels;
+    possessionChart.data.datasets[0].data = chartHomeData;
+    possessionChart.data.datasets[1].data = chartAwayData;
+    possessionChart.update("none");
+  }
+}
+
+// ── Análisis táctico ────────────────────────────────────────────────────────
+const TACTICAL_LABELS = {
+  territorial:   "Control Territorial",
+  ofensiva:      "Eficacia Ofensiva",
+  defensiva:     "Solidez Defensiva",
+  transiciones:  "Transiciones y Ritmo",
+};
+
+function updateTactical(lecturas) {
+  const panel = document.getElementById("tactical-sections");
+  panel.innerHTML = "";
+  Object.entries(TACTICAL_LABELS).forEach(([key, label]) => {
+    const texto = lecturas[key];
+    if (!texto) return;
+    const sec = document.createElement("div");
+    sec.className = "analysis-section";
+    sec.innerHTML = `
+      <div class="analysis-section-title">${label}</div>
+      <div class="analysis-text">${escHtml(texto)}</div>
+    `;
+    panel.appendChild(sec);
+  });
+}
+
+// ── Alerta de dominio ───────────────────────────────────────────────────────
+function updateAlerta(texto) {
+  const el = document.getElementById("alerta-dominio");
+  if (texto) {
+    el.textContent = "◆ " + texto;
+    el.classList.add("visible");
+  } else {
+    el.classList.remove("visible");
+  }
+}
+
+// ── Eventos arbitrales ──────────────────────────────────────────────────────
+const EVENT_ICONS = {
+  "amarilla":       "🟡",
+  "roja":           "🔴",
+  "doble amarilla": "🟠",
+  "gol":            "⚽",
+  "sustitucion":    "🔄",
+};
+
+function updateEvents(eventos, arb) {
+  const panel    = document.getElementById("arbitral-panel");
+  const timeline = document.getElementById("eventos-timeline");
+  const lectura  = document.getElementById("arbitral-lectura");
+  panel.style.display = "";
+
+  timeline.innerHTML = "";
+  eventos.slice().sort((a,b) => (a.minuto||0) - (b.minuto||0)).forEach(ev => {
+    const icon = EVENT_ICONS[ev.tipo === "gol" ? "gol" :
+                   ev.tipo === "sustitucion" ? "sustitucion" :
+                   (ev.detalle || "").toLowerCase()] || "·";
+    const item = document.createElement("div");
+    item.className = "event-item";
+    item.innerHTML = `
+      <div class="event-min">${ev.minuto ? ev.minuto + "'" : "—"}</div>
+      <div class="event-icon">${icon}</div>
+      <div class="event-desc">
+        <strong>${escHtml(ev.jugador || "")}</strong>
+        ${ev.asistencia ? " → " + escHtml(ev.asistencia) : ""}
+      </div>
+      <div class="event-team">${escHtml(ev.equipo || "")}</div>
+    `;
+    timeline.appendChild(item);
+  });
+
+  if (arb && arb.interpretacion) {
+    lectura.textContent = arb.interpretacion;
+  }
+}
+
+// ── Informe HT / FT ─────────────────────────────────────────────────────────
+function showReport(report) {
+  const overlay = document.getElementById("report-overlay");
+  const tipoEl  = document.getElementById("report-tipo");
+  const textEl  = document.getElementById("report-text");
+
+  tipoEl.textContent = report.tipo === "HT"
+    ? "Informe de Primer Tiempo"
+    : "Informe Final";
+  tipoEl.className = report.tipo === "HT" ? "ht" : "ft";
+  textEl.textContent = report.texto || "";
+  overlay.classList.add("visible");
+
+  // Inicializar gráfico aquí si aún no está listo
+  if (!possessionChart) {
+    const hName = document.getElementById("home-name").textContent;
+    const aName = document.getElementById("away-name").textContent;
+    initChart(hName, aName);
+  }
+}
+
+document.getElementById("btn-close-report").addEventListener("click", () => {
+  document.getElementById("report-overlay").classList.remove("visible");
+});
+
+document.getElementById("btn-copy-report").addEventListener("click", () => {
+  const text = document.getElementById("report-text").textContent;
+  navigator.clipboard.writeText(text).then(() => {
+    document.getElementById("btn-copy-report").textContent = "✓ Copiado";
+    setTimeout(() => {
+      document.getElementById("btn-copy-report").textContent = "Copiar";
+    }, 2000);
+  });
+});
+
+// Cerrar modal al hacer clic fuera
+document.getElementById("report-overlay").addEventListener("click", function(e) {
+  if (e.target === this) this.classList.remove("visible");
+});
+
+// ── Inicialización del chart (se llama desde handleUpdate) ──────────────────
+let firstInfoReceived = false;
+
+// ── Utilidades ──────────────────────────────────────────────────────────────
+function escHtml(str) {
+  return String(str ?? "")
+    .replace(/&/g,"&amp;")
+    .replace(/</g,"&lt;")
+    .replace(/>/g,"&gt;");
+}
+</script>
+</body>
+</html>
