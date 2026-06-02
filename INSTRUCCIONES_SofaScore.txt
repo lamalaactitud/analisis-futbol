@@ -1,0 +1,101 @@
+============================================================
+  SOFASCORE LIVE STATS — INSTRUCCIONES DE INSTALACIÓN Y USO
+============================================================
+
+¿Qué hace este programa?
+  Muestra estadísticas EN VIVO de partidos de fútbol
+  directamente desde SofaScore. Se actualiza sólo cada
+  2 minutos. Puedes ver posesión, tiros, pases, duelos y más.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PASO 1 — Instalar Python (solo la primera vez)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  1. Abre tu navegador y ve a:  https://www.python.org/downloads/
+  2. Haz clic en el botón amarillo "Download Python 3.x.x"
+  3. Ejecuta el instalador descargado
+  4. MUY IMPORTANTE: marca la casilla
+     "Add Python to PATH" antes de hacer clic en Install
+  5. Haz clic en "Install Now" y espera que termine
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PASO 2 — Instalar las librerías necesarias (solo la primera vez)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  1. Presiona las teclas  Windows + R  al mismo tiempo
+  2. Escribe  cmd  y presiona Enter
+  3. Se abre una ventana negra (Símbolo del sistema)
+  4. Copia y pega este comando (clic derecho → Pegar) y presiona Enter:
+
+     pip install requests rich
+
+  5. Espera a que termine de instalar (verás texto moviéndose)
+  6. Cierra la ventana negra cuando termine
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PASO 3 — Ejecutar el programa
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  OPCIÓN A — Doble clic (más fácil):
+    1. Ve al Escritorio
+    2. Haz doble clic en el archivo  sofascore_stats.py
+    (Si no abre, prueba con Opción B)
+
+  OPCIÓN B — Desde la ventana negra:
+    1. Presiona  Windows + R  → escribe  cmd  → Enter
+    2. Escribe este comando y presiona Enter:
+
+       python "%USERPROFILE%\Desktop\sofascore_stats.py"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PASO 4 — Cómo usar el programa
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  1. El programa mostrará una lista numerada con los
+     partidos de fútbol que están jugándose EN ESTE MOMENTO.
+
+  2. Escribe el número del partido que quieres seguir
+     y presiona Enter.
+
+  3. Verás las estadísticas en pantalla. El programa se
+     actualiza automáticamente cada 2 minutos.
+
+  4. Para cerrar el programa: presiona  Ctrl + C
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ESTADÍSTICAS QUE SE MUESTRAN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  • Posesión (%)
+  • Tiros totales
+  • Tiros al arco
+  • Ocasiones claras
+  • Pases completados
+  • Recuperaciones de balón
+  • Duelos ganados
+  • Córners
+  • Faltas
+  • Tarjetas amarillas / rojas
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SOLUCIÓN DE PROBLEMAS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  "No hay partidos en vivo"
+    → Solo funciona cuando hay partidos activos.
+      Los partidos suelen jugarse entre las 13:00 y 23:00 hs.
+
+  "ERROR: No se pudo conectar"
+    → Verifica que tienes internet y vuelve a intentar.
+
+  "pip no se reconoce como un comando"
+    → Reinstala Python marcando "Add Python to PATH".
+
+  La pantalla no se ve con colores bonitos
+    → El programa funciona igual, solo sin colores.
+      Instala "Windows Terminal" desde la Tienda de Windows
+      para mejor visualización.
+
+============================================================
+  Archivo del script: sofascore_stats.py (en el Escritorio)
+============================================================
